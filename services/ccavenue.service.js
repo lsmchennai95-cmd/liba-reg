@@ -1,11 +1,23 @@
 import crypto from 'node:crypto';
 import { env } from '../config/env.js';
+import { createSafeError, SAFE_MESSAGES } from './errorLogger.service.js';
 
-const createGatewayConfigError = (message, code = 'CCAVENUE_CONFIG_MISSING', statusCode = 503) => {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  error.code = code;
-  return error;
+const createGatewayConfigError = (
+  publicMessage,
+  code = 'CCAVENUE_CONFIG_MISSING',
+  statusCode = 503,
+  internalMessage = publicMessage,
+  metadata = null
+) => {
+  return createSafeError({
+    message: publicMessage,
+    internalMessage,
+    statusCode,
+    code,
+    isOperational: true,
+    isGatewayConfigError: statusCode >= 500 || code.startsWith('CCAVENUE_'),
+    metadata
+  });
 };
 
 // Fixed IV used by the CCAvenue PHP kit: bytes 0x00..0x0f
@@ -55,9 +67,11 @@ export const assertCcavenueReady = () => {
   const config = getGatewayConfig();
   if (!config.isReady) {
     throw createGatewayConfigError(
-      `CCAvenue configuration incomplete. Missing environment variable(s): ${config.missingFields.join(', ')}.`,
+      SAFE_MESSAGES.GATEWAY_UNAVAILABLE,
       'CCAVENUE_ENV_INCOMPLETE',
-      503
+      503,
+      `CCAvenue configuration incomplete. Missing environment variable(s): ${config.missingFields.join(', ')}.`,
+      { missingFields: config.missingFields, env: config.env }
     );
   }
   return config;
@@ -85,13 +99,19 @@ export const buildMerchantData = (fields) => {
 export const encrypt = (plainText, workingKey) => {
   if (!workingKey) {
     throw createGatewayConfigError(
-      'CCAVENUE_WORKING_KEY is required for CCAvenue request encryption.',
+      SAFE_MESSAGES.GATEWAY_UNAVAILABLE,
       'CCAVENUE_WORKING_KEY_MISSING',
-      503
+      503,
+      'CCAVENUE_WORKING_KEY is required for CCAvenue request encryption.'
     );
   }
   if (!plainText) {
-    throw createGatewayConfigError('Merchant data payload cannot be empty.', 'CCAVENUE_EMPTY_PAYLOAD', 400);
+    throw createGatewayConfigError(
+      'Unable to prepare payment request. Please try again.',
+      'CCAVENUE_EMPTY_PAYLOAD',
+      400,
+      'Merchant data payload cannot be empty.'
+    );
   }
 
   const key = deriveKey(workingKey);
@@ -116,18 +136,29 @@ export const encrypt = (plainText, workingKey) => {
 export const decrypt = (encryptedText, workingKey) => {
   if (!workingKey) {
     throw createGatewayConfigError(
-      'CCAVENUE_WORKING_KEY is required to decrypt CCAvenue response.',
+      SAFE_MESSAGES.GATEWAY_UNAVAILABLE,
       'CCAVENUE_WORKING_KEY_MISSING',
-      503
+      503,
+      'CCAVENUE_WORKING_KEY is required to decrypt CCAvenue response.'
     );
   }
   if (!encryptedText || typeof encryptedText !== 'string') {
-    throw createGatewayConfigError('Missing or invalid encrypted CCAvenue response (encResp).', 'INVALID_ENC_RESP', 400);
+    throw createGatewayConfigError(
+      'Invalid payment gateway response received.',
+      'INVALID_ENC_RESP',
+      400,
+      'Missing or invalid encrypted CCAvenue response (encResp).'
+    );
   }
 
   const cleanHex = encryptedText.trim();
   if (cleanHex.length === 0 || cleanHex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(cleanHex)) {
-    throw createGatewayConfigError('encResp is not a valid hex string.', 'INVALID_ENC_RESP', 400);
+    throw createGatewayConfigError(
+      'Invalid payment gateway response received.',
+      'INVALID_ENC_RESP',
+      400,
+      'encResp is not a valid hex string.'
+    );
   }
 
   const key = deriveKey(workingKey);
@@ -142,9 +173,10 @@ export const decrypt = (encryptedText, workingKey) => {
     return decrypted.toString('utf8');
   } catch (err) {
     throw createGatewayConfigError(
-      'Failed to decrypt CCAvenue response. Check CCAVENUE_WORKING_KEY.',
+      'Unable to verify payment gateway response. Please contact support if payment was debited.',
       'CCAVENUE_DECRYPT_FAILED',
-      400
+      400,
+      `Failed to decrypt CCAvenue response (${err?.message || 'cipher error'}). Check CCAVENUE_WORKING_KEY.`
     );
   }
 };

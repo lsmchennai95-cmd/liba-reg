@@ -1,5 +1,5 @@
 import * as NotificationModel from './notification.model.js';
-import { sendInternalRegistrationNotificationEmail } from '../../services/email.service.js';
+import { sendInternalRegistrationNotificationEmail } from '../../mail/registration-notification-mail.js';
 
 const formatRecipient = (row) => {
   if (!row) return null;

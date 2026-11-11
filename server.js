@@ -1,6 +1,17 @@
 import { app } from './app.js';
 import { env } from './config/env.js';
 import { testConnection } from './config/database.js';
+import { logException } from './services/errorLogger.service.js';
+
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logException(err, { endpoint: 'process.unhandledRejection' });
+});
+
+process.on('uncaughtException', (err) => {
+  logException(err, { endpoint: 'process.uncaughtException' });
+  process.exit(1);
+});
 
 const startServer = async () => {
   console.log(`Starting LIBA Server in ${env.nodeEnv} mode...`);

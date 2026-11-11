@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Payment Could Not Be Completed</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f6f9;">
+  <div style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width:600px; margin:24px auto; padding:28px 24px; border:1px solid #e2e8f0; border-radius:10px; background:#ffffff; color:#1e293b;">
+    <div style="background:#0b2b4f; background:linear-gradient(135deg, #0b2b4f 0%, #1e3a8a 100%); border-radius:8px; text-align:center; padding:22px 20px 18px; margin-bottom:24px;">
+      <img src="cid:logoImg" alt="LIBA Online" width="210" style="display:block; width:210px; max-width:75%; height:auto; margin:0 auto 10px;">
+      <h2 style="color:#ffffff; margin:0 0 4px; font-size:20px; font-weight:800; letter-spacing:-0.3px;">LIBA Online Programmes</h2>
+      <p style="color:#dbeafe; font-size:13px; margin:0;">Loyola Institute of Business Administration &bull; Chennai, India</p>
+    </div>
+
+    <div style="background:#fef2f2; border:1.5px solid #fecaca; border-radius:8px; padding:18px; text-align:center; margin-bottom:24px;">
+      <div style="display:inline-block; width:44px; height:44px; line-height:44px; border-radius:50%; background:#ef4444; color:#ffffff; font-size:22px; font-weight:bold; margin-bottom:8px;">&#10005;</div>
+      <h3 style="color:#991b1b; margin:0 0 6px; font-size:18px; font-weight:700;">Payment Could Not Be Completed</h3>
+      <p style="color:#b91c1c; margin:0; font-size:13.5px;">We were unable to process your payment of <strong>{{formattedAmount}}</strong>.</p>
+    </div>
+
+    <p style="font-size:15px; line-height:1.5; color:#334155;">
+      Dear <strong>{{name}}</strong>,
+    </p>
+    <p style="font-size:14px; line-height:1.6; color:#475569;">
+      We noticed that your recent attempt to pay the <strong>{{paymentType}}</strong> for <strong>{{courseName}}</strong> was unsuccessful or cancelled.
+    </p>
+
+    <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:6px; padding:14px 16px; margin:18px 0; font-size:13px; color:#92400e; line-height:1.5;">
+      <strong>Important:</strong> If any amount has been deducted from your bank account, card, or UPI, it will be automatically refunded by your issuing bank within <strong>5–7 business days</strong>.
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:18px; margin:22px 0;">
+      <table style="width:100%; border-collapse:collapse; font-size:13.5px;">
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Application Number:</td>
+          <td style="padding:7px 0; color:#0b2b4f; font-weight:700; text-align:right;">{{applicationNumber}}</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Programme:</td>
+          <td style="padding:7px 0; color:#0b2b4f; font-weight:700; text-align:right;">{{courseName}}</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Attempted Amount:</td>
+          <td style="padding:7px 0; color:#dc2626; font-weight:700; text-align:right;">{{formattedAmount}}</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Order ID:</td>
+          <td style="padding:7px 0; color:#1e293b; font-family:monospace; font-size:13px; text-align:right;">{{orderId}}</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Status:</td>
+          <td style="padding:7px 0; color:#dc2626; font-weight:700; text-align:right;">FAILED / CANCELLED</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 0; color:#64748b; font-weight:600;">Reason:</td>
+          <td style="padding:7px 0; color:#475569; text-align:right;">{{reason}}</td>
+        </tr>
+      </table>
+    </div>
+
+    <p style="font-size:14px; line-height:1.6; color:#475569;">
+      Your registration details are securely preserved. You can retry your payment at any time using your preferred payment method (UPI, Debit Card, Credit Card, or Net Banking).
+    </p>
+
+    <div style="text-align:center; margin:28px 0 20px;">
+      <a href="{{retryUrl}}" style="display:inline-block; background:#0066cc; color:#ffffff; text-decoration:none; padding:12px 32px; border-radius:6px; font-weight:700; font-size:14.5px; box-shadow:0 4px 10px rgba(0, 102, 204, 0.25);">
+        Retry Payment Now &rarr;
+      </a>
+    </div>
+
+    <hr style="border:none; border-top:1px solid #e2e8f0; margin:28px 0 18px;" />
+    <p style="color:#94a3b8; font-size:12px; text-align:center; margin:0; line-height:1.5;">
+      &copy; {{year}} LIBA Online Admissions. Need assistance? Contact <a href="mailto:support@libaonline.com" style="color:#0066cc;">support@libaonline.com</a>.
+    </p>
+  </div>
+</body>
+</html>
+

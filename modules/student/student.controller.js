@@ -1,4 +1,6 @@
 import * as StudentService from './student.service.js';
+import { env } from '../../config/env.js';
+import { logException, withSafeHandler } from '../../services/errorLogger.service.js';
 
 export const getProfile = async (req, res, next) => {
   try {
@@ -84,8 +86,8 @@ export const getAcademicAndScholarship = async (req, res, next) => {
   }
 };
 
-export const getRegistrationFee = async (req, res, next) => {
-  try {
+export const getRegistrationFee = withSafeHandler(
+  async (req, res) => {
     const userId = req.user.userId || req.user.id;
     const result = await StudentService.getRegistrationFee(userId);
     return res.status(200).json({
@@ -93,13 +95,15 @@ export const getRegistrationFee = async (req, res, next) => {
       message: 'Registration fee details retrieved successfully',
       data: result
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'students.registrationFee',
+    fallbackMessage: 'Unable to load registration fee details right now. Please try again.'
   }
-};
+);
 
-export const initiateRegistrationPayment = async (req, res, next) => {
-  try {
+export const initiateRegistrationPayment = withSafeHandler(
+  async (req, res) => {
     const userId = req.user.userId || req.user.id;
     const result = await StudentService.initiateRegistrationPayment(userId, req.body || {});
     return res.status(200).json({
@@ -107,18 +111,22 @@ export const initiateRegistrationPayment = async (req, res, next) => {
       message: result.alreadyPaid ? result.message : 'Payment initiated successfully',
       data: result
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'payments.initiate',
+    fallbackMessage: 'Payment service is temporarily unavailable. Please try again later.'
   }
-};
+);
 
-export const handleCcavenueResponse = async (req, res, next) => {
+export const handleCcavenueResponse = async (req, res) => {
   try {
     const encResp = req.body?.encResp || req.query?.encResp || '';
     const result = await StudentService.handleCcavenueResponse({ encResp });
     return res.redirect(302, result.redirectUrl);
   } catch (error) {
-    next(error);
+    logException(error, { req, endpoint: 'payments.ccavenue.response' });
+    const frontendBase = (env.frontendUrl || 'http://localhost:8001').replace(/\/$/, '');
+    return res.redirect(302, `${frontendBase}/student/payment-failed/?status=error`);
   }
 };
 

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{subject}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f6f9;">
+  <table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#f4f6f9">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table border="0" cellspacing="0" cellpadding="0" bgcolor="#ffffff" style="width:100%; max-width:560px; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden;">
+          <tr>
+            <td align="center" bgcolor="#0b2b4f" style="background:linear-gradient(135deg, #0b2b4f 0%, #1e3a8a 100%); padding:24px 24px 20px;">
+              <img src="cid:logoImg" alt="LIBA Online" width="210" style="display:block; width:210px; max-width:75%; height:auto; margin:0 auto 10px;">
+              <h2 style="font-family:Arial, Helvetica, sans-serif; color:#ffffff; margin:0; font-size:19px;">LIBA Online Programmes</h2>
+              <p style="font-family:Arial, Helvetica, sans-serif; color:#dbeafe; font-size:12.5px; margin:4px 0 0;">Loyola Institute of Business Administration &bull; Chennai</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px; font-family:Arial, Helvetica, sans-serif; color:#1e293b;">
+              <p style="margin:0 0 14px; font-size:16px;">Dear <strong>{{name}}</strong>,</p>
+              <p style="margin:0 0 18px; color:#334155; font-size:14.5px; line-height:1.6;">
+                Thank you for choosing LIBA Online. Please use the following One-Time Password (OTP) to {{attempt_for}}:
+              </p>
+              <div style="text-align:center; margin:24px 0;">
+                <span style="display:inline-block; font-size:32px; font-weight:700; letter-spacing:6px; color:#0066cc; background:#eff6ff; padding:12px 28px; border-radius:6px; border:1px solid #bfdbfe; font-family:Courier, 'Courier New', monospace;">
+                  {{otp}}
+                </span>
+              </div>
+              <p style="margin:0; color:#64748b; font-size:13px; line-height:1.5;">
+                This OTP is valid for 10 minutes and can only be used once. Please do not share this code with anyone.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px 22px; border-top:1px solid #e2e8f0; text-align:center; font-family:Arial, Helvetica, sans-serif; color:#94a3b8; font-size:12px;">
+              &copy; {{year}} LIBA Online Admissions Team &bull; Chennai, India
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+

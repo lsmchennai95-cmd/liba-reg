@@ -2,7 +2,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
 import * as AuthModel from './auth.model.js';
-import { sendOtpEmail } from '../../services/email.service.js';
+import { sendOtpEmail } from '../../mail/otp-mail.js';
 import { triggerRegistrationNotification } from '../notification/notification.service.js';
 
 const generateStudentId = () => {

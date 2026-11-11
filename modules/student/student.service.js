@@ -5,11 +5,10 @@ import {
   getCourseScholarshipConfig,
   calculateScholarshipBreakdown
 } from './scholarship.constants.js';
-import {
-  sendPaymentSuccessEmail,
-  sendPaymentFailedEmail
-} from '../../services/email.service.js';
+import { sendPaymentSuccessEmail } from '../../mail/payment-success-mail.js';
+import { sendPaymentFailedEmail } from '../../mail/payment-failed-mail.js';
 import * as CcavenueService from '../../services/ccavenue.service.js';
+import { createSafeError, logException, SAFE_MESSAGES } from '../../services/errorLogger.service.js';
 import { env } from '../../config/env.js';
 
 export const getStudentProfile = async (userId) => {
@@ -704,11 +703,21 @@ export const handleCcavenueResponse = async ({ encResp }) => {
 
   const gatewayConfig = CcavenueService.getGatewayConfig();
   if (!gatewayConfig.workingKey || !CcavenueService.isCryptoConfigured()) {
+    logException(
+      createSafeError({
+        message: SAFE_MESSAGES.GATEWAY_UNAVAILABLE,
+        internalMessage: 'CCAvenue decryption cannot proceed: Crypto kit or CCAVENUE_WORKING_KEY is missing.',
+        statusCode: 503,
+        code: 'CCAVENUE_ENV_INCOMPLETE',
+        isGatewayConfigError: true
+      }),
+      { endpoint: 'payments.ccavenue.response' }
+    );
     return {
       statusCode: 503,
       redirectUrl: `${failedBaseUrl}?status=gateway_not_configured`,
       outcome: 'gateway_not_configured',
-      message: 'CCAvenue decryption cannot proceed: Crypto.php kit or CCAVENUE_WORKING_KEY is missing.'
+      message: SAFE_MESSAGES.GATEWAY_UNAVAILABLE
     };
   }
 
@@ -716,12 +725,12 @@ export const handleCcavenueResponse = async ({ encResp }) => {
   try {
     decryptedString = CcavenueService.decrypt(encResp.trim(), gatewayConfig.workingKey);
   } catch (decryptErr) {
-    console.error('[CCAVENUE-ERROR] Failed to decrypt response:', decryptErr.message);
+    logException(decryptErr, { endpoint: 'payments.ccavenue.response' });
     return {
       statusCode: 400,
       redirectUrl: `${failedBaseUrl}?status=invalid_response`,
       outcome: 'invalid_response',
-      message: 'Invalid encrypted CCAvenue response.'
+      message: 'Invalid encrypted payment gateway response.'
     };
   }
 

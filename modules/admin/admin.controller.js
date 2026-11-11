@@ -1,5 +1,6 @@
 import * as AdminService from './admin.service.js';
 import { env } from '../../config/env.js';
+import { withSafeHandler } from '../../services/errorLogger.service.js';
 
 const getAdminCookieOptions = () => ({
   httpOnly: true,
@@ -9,27 +10,29 @@ const getAdminCookieOptions = () => ({
   path: '/'
 });
 
-export const loginAdmin = async (req, res, next) => {
-  try {
+export const loginAdmin = withSafeHandler(
+  async (req, res) => {
     const { email, password } = req.body;
     const result = await AdminService.loginAdmin(email, password);
 
-    res.cookie(env.adminCookieName, result.token, getAdminCookieOptions());
+    res.cookie(env.adminCookieName || 'liba_admin_token', result.token, getAdminCookieOptions());
 
     return res.status(200).json({
       success: true,
       message: 'Admin login successful',
       data: result
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.auth.login',
+    fallbackMessage: 'Unable to sign in right now. Please try again.'
   }
-};
+);
 
 export const logoutAdmin = (req, res) => {
   const options = getAdminCookieOptions();
   delete options.maxAge;
-  res.clearCookie(env.adminCookieName, options);
+  res.clearCookie(env.adminCookieName || 'liba_admin_token', options);
 
   return res.status(200).json({
     success: true,
@@ -38,81 +41,93 @@ export const logoutAdmin = (req, res) => {
   });
 };
 
-export const getAdminMe = async (req, res, next) => {
-  try {
+export const getAdminMe = withSafeHandler(
+  async (req, res) => {
     const user = await AdminService.getAdminMe(req.user.userId || req.user.id);
     return res.status(200).json({
       success: true,
       message: 'Admin profile retrieved successfully',
       data: { user }
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.auth.me',
+    fallbackMessage: 'Unable to verify administrator session.'
   }
-};
+);
 
-export const getDashboardStats = async (req, res, next) => {
-  try {
+export const getDashboardStats = withSafeHandler(
+  async (req, res) => {
     const stats = await AdminService.getDashboardStats(req.validatedQuery || req.query);
     return res.status(200).json({
       success: true,
       message: 'Admin dashboard statistics retrieved successfully',
       data: stats
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.dashboard.stats',
+    fallbackMessage: 'Unable to load dashboard metrics right now. Please try again.'
   }
-};
+);
 
-export const getStudents = async (req, res, next) => {
-  try {
+export const getStudents = withSafeHandler(
+  async (req, res) => {
     const data = await AdminService.getStudents(req.validatedQuery || req.query);
     return res.status(200).json({
       success: true,
       message: 'Students retrieved successfully',
       data
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.students.list',
+    fallbackMessage: 'Unable to load student records right now. Please try again.'
   }
-};
+);
 
-export const getStudentById = async (req, res, next) => {
-  try {
+export const getStudentById = withSafeHandler(
+  async (req, res) => {
     const student = await AdminService.getStudentById(req.params.id);
     return res.status(200).json({
       success: true,
       message: 'Student details retrieved successfully',
       data: { student }
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.students.detail',
+    fallbackMessage: 'Unable to load student details right now. Please try again.'
   }
-};
+);
 
-export const getStudentPayments = async (req, res, next) => {
-  try {
+export const getStudentPayments = withSafeHandler(
+  async (req, res) => {
     const data = await AdminService.getStudentPayments(req.params.id);
     return res.status(200).json({
       success: true,
       message: 'Student payment history retrieved successfully',
       data
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.students.payments',
+    fallbackMessage: 'Unable to load student payment history right now. Please try again.'
   }
-};
+);
 
-export const getPayments = async (req, res, next) => {
-  try {
+export const getPayments = withSafeHandler(
+  async (req, res) => {
     const data = await AdminService.getPayments(req.validatedQuery || req.query);
     return res.status(200).json({
       success: true,
       message: 'Payment transactions retrieved successfully',
       data
     });
-  } catch (error) {
-    next(error);
+  },
+  {
+    context: 'admin.payments.list',
+    fallbackMessage: 'Unable to load payment transactions right now. Please try again.'
   }
-};
+);
 
