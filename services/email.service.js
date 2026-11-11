@@ -6,5 +6,6 @@ export {
   sendOtpEmail,
   sendPaymentSuccessEmail,
   sendPaymentFailedEmail,
-  sendInternalRegistrationNotificationEmail
+  sendInternalRegistrationNotificationEmail,
+  sendInternalPaymentNotificationEmail
 } from '../mail/index.js';

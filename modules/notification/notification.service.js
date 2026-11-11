@@ -1,5 +1,6 @@
 import * as NotificationModel from './notification.model.js';
 import { sendInternalRegistrationNotificationEmail } from '../../mail/registration-notification-mail.js';
+import { sendInternalPaymentNotificationEmail } from '../../mail/payment-notification-mail.js';
 
 const formatRecipient = (row) => {
   if (!row) return null;
@@ -250,5 +251,52 @@ export const triggerRegistrationNotification = async (studentData) => {
       error.message
     );
     return { enqueued: false, error: error.message };
+  }
+};
+
+/**
+ * Dispatches an internal notification email to active recipients when a student
+ * completes their registration payment. Never throws so payment confirmation remains unaffected.
+ */
+export const triggerPaymentSuccessNotification = async (paymentData = {}) => {
+  try {
+    const activeRecipients = await NotificationModel.getActiveRecipients();
+    if (!activeRecipients || activeRecipients.length === 0) {
+      console.info(
+        `[NOTIFICATION-SERVICE] No active notification recipients configured; skipping payment alert for ${paymentData.orderId || paymentData.userId}.`
+      );
+      return { skipped: true, reason: 'No active notification recipients configured' };
+    }
+
+    const result = await sendInternalPaymentNotificationEmail({
+      recipients: activeRecipients,
+      student: {
+        fullName: paymentData.fullName,
+        email: paymentData.email,
+        phone: paymentData.phone,
+        courseName: paymentData.courseName || 'LIBA Online Programme',
+        specializationName: paymentData.specializationName || null,
+        studentId: paymentData.studentId || null,
+        applicationNo: paymentData.applicationNo || null
+      },
+      payment: {
+        amount: paymentData.amount,
+        orderId: paymentData.orderId,
+        transactionId: paymentData.transactionId,
+        paymentMode: paymentData.paymentMode || null,
+        paidAt: paymentData.paidAt || new Date()
+      }
+    });
+
+    return {
+      sent: !result.skipped,
+      ...result
+    };
+  } catch (error) {
+    console.error(
+      `[NOTIFICATION-SERVICE] Failed to send internal payment notification for order ${paymentData.orderId || 'N/A'}:`,
+      error.message
+    );
+    return { sent: false, error: error.message };
   }
 };

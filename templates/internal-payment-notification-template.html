@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Registration Payment Completed Notification</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f6f9;">
+  <div style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width:620px; margin:24px auto; padding:28px 24px; border:1px solid #e2e8f0; border-radius:10px; background:#ffffff; color:#1e293b;">
+    <div style="background:#0b2b4f; background:linear-gradient(135deg, #0b2b4f 0%, #1e3a8a 100%); border-radius:8px; padding:22px 24px; text-align:center; margin-bottom:24px; color:#ffffff;">
+      <img src="cid:logoImg" alt="LIBA Online" width="200" style="display:block; width:200px; max-width:70%; height:auto; margin:0 auto 10px;">
+      <h2 style="margin:0 0 4px; font-size:21px; font-weight:800; letter-spacing:-0.2px; color:#ffffff;">LIBA Online Programmes</h2>
+      <p style="margin:0; font-size:13px; color:#dbeafe;">Loyola Institute of Business Administration &bull; Admissions Payment Alert</p>
+    </div>
+
+    <div style="background:#ecfdf5; border-left:4px solid #10b981; border-radius:4px; padding:14px 16px; margin-bottom:22px;">
+      <h3 style="margin:0 0 4px; color:#065f46; font-size:16px;">Student Registration Payment Completed</h3>
+      <p style="margin:0; color:#334155; font-size:13.5px; line-height:1.5;">
+        A student has successfully completed their registration fee payment on the LIBA Online platform and their account is now active.
+      </p>
+    </div>
+
+    <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:18px 20px; margin-bottom:22px;">
+      <table style="width:100%; border-collapse:collapse; font-size:13.5px;">
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Student Full Name</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-weight:700; text-align:right; border-bottom:1px solid #e2e8f0;">{{fullName}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Registered Email</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-weight:600; text-align:right; border-bottom:1px solid #e2e8f0;">{{email}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Phone Number</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-weight:600; text-align:right; border-bottom:1px solid #e2e8f0;">{{phone}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Course Details</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-weight:700; text-align:right; border-bottom:1px solid #e2e8f0;">{{courseDetails}}</td>
+        </tr>
+        {{applicationRow}}
+        {{studentIdRow}}
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Amount Paid</td>
+          <td style="padding:8px 0; color:#0d8a4e; font-weight:800; font-size:15px; text-align:right; border-bottom:1px solid #e2e8f0;">{{formattedAmount}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Order ID</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-family:monospace; font-size:13px; font-weight:700; text-align:right; border-bottom:1px solid #e2e8f0;">{{orderId}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Transaction Reference</td>
+          <td style="padding:8px 0; color:#0b2b4f; font-family:monospace; font-size:13px; font-weight:600; text-align:right; border-bottom:1px solid #e2e8f0;">{{transactionId}}</td>
+        </tr>
+        {{paymentModeRow}}
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Payment Date &amp; Time</td>
+          <td style="padding:8px 0; color:#334155; text-align:right; border-bottom:1px solid #e2e8f0;">{{formattedDate}}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 0; color:#64748b; font-weight:600;">Account &amp; Payment Status</td>
+          <td style="padding:8px 0; text-align:right;">
+            <span style="display:inline-block; background:#dcfce7; color:#166534; font-size:12px; font-weight:700; padding:3px 10px; border-radius:999px;">
+              Paid &amp; Active
+            </span>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <hr style="border:none; border-top:1px solid #e2e8f0; margin:22px 0 16px;" />
+    <p style="color:#94a3b8; font-size:12px; text-align:center; margin:0; line-height:1.5;">
+      &copy; {{year}} Automated internal admissions payment notification from LIBA Online.<br>
+      Loyola Institute of Business Administration &bull; Chennai, India
+    </p>
+  </div>
+</body>
+</html>
+

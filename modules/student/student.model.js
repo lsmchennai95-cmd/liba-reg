@@ -321,12 +321,17 @@ export const findRegistrationPaymentById = async (id) => {
       sp.application_no,
       sp.first_name,
       sp.last_name,
+      sp.country_code,
+      sp.mobile_number,
       CONCAT(sp.first_name, IF(sp.last_name IS NOT NULL AND sp.last_name != '', CONCAT(' ', sp.last_name), '')) AS full_name,
-      c.name AS course_name
+      c.name AS course_name,
+      s.name AS specialization_name
     FROM registration_payments rp
     INNER JOIN users u ON u.id = rp.user_id
     LEFT JOIN student_profiles sp ON sp.user_id = u.id
     LEFT JOIN courses c ON c.id = rp.course_id
+    LEFT JOIN enrollments e ON e.user_id = u.id AND e.course_id = rp.course_id
+    LEFT JOIN specializations s ON s.id = e.specialization_id
     WHERE rp.id = ?
     LIMIT 1
   `;
@@ -344,12 +349,17 @@ export const findRegistrationPaymentByOrderId = async (orderId) => {
       sp.application_no,
       sp.first_name,
       sp.last_name,
+      sp.country_code,
+      sp.mobile_number,
       CONCAT(sp.first_name, IF(sp.last_name IS NOT NULL AND sp.last_name != '', CONCAT(' ', sp.last_name), '')) AS full_name,
-      c.name AS course_name
+      c.name AS course_name,
+      s.name AS specialization_name
     FROM registration_payments rp
     INNER JOIN users u ON u.id = rp.user_id
     LEFT JOIN student_profiles sp ON sp.user_id = u.id
     LEFT JOIN courses c ON c.id = rp.course_id
+    LEFT JOIN enrollments e ON e.user_id = u.id AND e.course_id = rp.course_id
+    LEFT JOIN specializations s ON s.id = e.specialization_id
     WHERE rp.order_id = ?
     LIMIT 1
   `;

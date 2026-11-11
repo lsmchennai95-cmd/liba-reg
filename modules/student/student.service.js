@@ -7,6 +7,7 @@ import {
 } from './scholarship.constants.js';
 import { sendPaymentSuccessEmail } from '../../mail/payment-success-mail.js';
 import { sendPaymentFailedEmail } from '../../mail/payment-failed-mail.js';
+import { triggerPaymentSuccessNotification } from '../notification/notification.service.js';
 import * as CcavenueService from '../../services/ccavenue.service.js';
 import { createSafeError, logException, SAFE_MESSAGES } from '../../services/errorLogger.service.js';
 import { env } from '../../config/env.js';
@@ -846,21 +847,46 @@ export const handleCcavenueResponse = async ({ encResp }) => {
     });
 
     if (!result.alreadyProcessed) {
+      const studentName = existingOrder.full_name || existingOrder.first_name || 'Student';
+      const resolvedTransactionId = result.order?.transaction_id || trackingId || orderId;
+      const paidAt = result.order?.paid_at || new Date();
+      const courseName = existingOrder.course_name || 'LIBA Online Programme';
+
       try {
         await sendPaymentSuccessEmail({
           to: existingOrder.email,
-          name: existingOrder.full_name || existingOrder.first_name || 'Student',
+          name: studentName,
           orderId,
-          transactionId: result.order?.transaction_id || trackingId || orderId,
+          transactionId: resolvedTransactionId,
           amount: expectedAmount,
           paymentType: 'Registration Fee',
-          courseName: existingOrder.course_name || 'LIBA Online Programme',
+          courseName,
           applicationNumber: existingOrder.application_no || 'N/A',
-          paidAt: result.order?.paid_at || new Date()
+          paidAt
         });
       } catch (mailErr) {
         console.error('[EMAIL-ERROR] Failed to send payment success email:', mailErr.message);
       }
+
+      const studentPhone = existingOrder.mobile_number
+        ? `${existingOrder.country_code || '+91'} ${existingOrder.mobile_number}`.trim()
+        : 'N/A';
+
+      await triggerPaymentSuccessNotification({
+        userId: existingOrder.user_id,
+        fullName: studentName,
+        email: existingOrder.email,
+        phone: studentPhone,
+        courseName,
+        specializationName: existingOrder.specialization_name || null,
+        studentId: existingOrder.student_id || null,
+        applicationNo: existingOrder.application_no || null,
+        orderId,
+        transactionId: resolvedTransactionId,
+        amount: expectedAmount,
+        paymentMode: paymentMode || result.order?.payment_mode || null,
+        paidAt
+      });
     }
 
     const queryParams = new URLSearchParams({
