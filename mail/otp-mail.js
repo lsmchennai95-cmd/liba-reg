@@ -1,7 +1,6 @@
 import { env } from '../config/env.js';
 import {
   escapeHtml,
-  getLogoAttachments,
   renderEmailTemplate,
   sendMail
 } from './send-mail.js';
@@ -12,7 +11,6 @@ export const sendOtpEmail = async ({ to, name, otp, purpose = 'registration' }) 
     ? 'LIBA Online - Email Verification OTP'
     : 'LIBA Online - Password Reset OTP';
 
-  const attachments = getLogoAttachments('liba-logo.png');
   const html = renderEmailTemplate(
     'otp-template.html',
     {
@@ -20,8 +18,7 @@ export const sendOtpEmail = async ({ to, name, otp, purpose = 'registration' }) 
       name: escapeHtml(name || 'Student'),
       attempt_for: isRegistration ? 'verify your account' : 'reset your password',
       otp: escapeHtml(otp)
-    },
-    { hasLogo: attachments.length > 0 }
+    }
   );
 
   if (env.nodeEnv !== 'production') {
@@ -32,8 +29,7 @@ export const sendOtpEmail = async ({ to, name, otp, purpose = 'registration' }) 
     to,
     subject,
     text: `Your LIBA Online verification OTP is: ${otp}. It is valid for 10 minutes.`,
-    html,
-    attachments
+    html
   });
 
   return true;

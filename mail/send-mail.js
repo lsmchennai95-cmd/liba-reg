@@ -7,7 +7,6 @@ import { env } from '../config/env.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TEMPLATES_DIR = path.resolve(__dirname, '../templates');
-const TEMPLATE_ASSETS_DIR = path.join(TEMPLATES_DIR, 'assets');
 
 let transporter = null;
 
@@ -62,63 +61,21 @@ export const getTransporter = () => {
 };
 
 /**
- * Resolve inline CID logo attachment from templates/assets when available.
- */
-export const getLogoAttachments = (preferredFileName = 'liba_full_logo_footer.png', cid = 'logoImg') => {
-  const candidates = [
-    preferredFileName,
-    'liba_full_logo_footer.png',
-    'liba-logo.png',
-    'liba-logo-white.png',
-    'liba-full-logo-blue.png'
-  ].filter(Boolean);
-
-  for (const fileName of new Set(candidates)) {
-    const assetPath = path.join(TEMPLATE_ASSETS_DIR, fileName);
-    if (fs.existsSync(assetPath)) {
-      return [
-        {
-          filename: fileName,
-          path: assetPath,
-          cid
-        }
-      ];
-    }
-  }
-
-  // Fallback: pick the first image file found in templates/assets/
-  if (fs.existsSync(TEMPLATE_ASSETS_DIR)) {
-    const imageFile = fs
-      .readdirSync(TEMPLATE_ASSETS_DIR)
-      .find((name) => /\.(png|jpe?g|webp|gif)$/i.test(name));
-    if (imageFile) {
-      return [
-        {
-          filename: imageFile,
-          path: path.join(TEMPLATE_ASSETS_DIR, imageFile),
-          cid
-        }
-      ];
-    }
-  }
-
-  return [];
-};
-
-/**
  * Load an HTML template from templates/ and replace {{placeholder}} tokens.
  */
 export const renderEmailTemplate = (templateFileName, variables = {}, { hasLogo = true } = {}) => {
   const templatePath = path.join(TEMPLATES_DIR, templateFileName);
   let html = fs.readFileSync(templatePath, 'utf8');
 
-  if (!hasLogo) {
-    html = html.replace(/<img[^>]*src=["']cid:logoImg["'][^>]*>\s*/gi, '');
+  const rawLogoUrl = String((variables.logoUrl ?? env.email.logoUrl) || '').trim();
+  if (!hasLogo || !rawLogoUrl) {
+    html = html.replace(/<img[^>]*src=["'](?:cid:logoImg|\{\{logoUrl\}\})["'][^>]*>\s*/gi, '');
   }
 
   const allVars = {
     year: new Date().getFullYear(),
-    ...variables
+    ...variables,
+    logoUrl: escapeHtml(rawLogoUrl)
   };
 
   for (const [key, value] of Object.entries(allVars)) {

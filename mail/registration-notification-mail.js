@@ -1,7 +1,6 @@
 import { env } from '../config/env.js';
 import {
   escapeHtml,
-  getLogoAttachments,
   renderEmailTemplate,
   sendMail
 } from './send-mail.js';
@@ -30,7 +29,6 @@ export const sendInternalRegistrationNotificationEmail = async ({
   const courseDetails = student.courseDetails || student.courseName || 'LIBA Online Programme';
 
   const subject = `Admissions Alert! ${fullName} is trying to register.`;
-  const attachments = getLogoAttachments('liba-logo-white.png');
 
   const html = renderEmailTemplate(
     'registration-notification-template.html',
@@ -39,8 +37,7 @@ export const sendInternalRegistrationNotificationEmail = async ({
       email: escapeHtml(email),
       phone: escapeHtml(phone),
       courseDetails: escapeHtml(courseDetails)
-    },
-    { hasLogo: attachments.length > 0 }
+    }
   );
 
   const text = [
@@ -60,8 +57,7 @@ export const sendInternalRegistrationNotificationEmail = async ({
       bcc: recipientEmails,
       subject,
       text,
-      html,
-      attachments
+      html
     },
     {
       throwIfUnconfigured: true,

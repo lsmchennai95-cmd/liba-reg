@@ -2,7 +2,6 @@ import { env } from '../config/env.js';
 import {
   escapeHtml,
   formatINR,
-  getLogoAttachments,
   renderEmailTemplate,
   sendMail
 } from './send-mail.js';
@@ -72,7 +71,6 @@ export const sendInternalPaymentNotificationEmail = async ({
     ? (Number.isInteger(numericAmount) ? String(numericAmount) : numericAmount.toFixed(2))
     : '0';
   const subject = `registration - ${subjectAmount} Name - ${fullName}`;
-  const attachments = getLogoAttachments('liba_full_logo_footer.png');
 
   const html = renderEmailTemplate(
     'internal-payment-notification-template.html',
@@ -88,8 +86,7 @@ export const sendInternalPaymentNotificationEmail = async ({
       transactionId: escapeHtml(transactionId),
       paymentModeRow: buildOptionalRow('Payment Mode', paymentMode, false),
       formattedDate: escapeHtml(formattedDate)
-    },
-    { hasLogo: attachments.length > 0 }
+    }
   );
 
   const text = [
@@ -125,8 +122,7 @@ export const sendInternalPaymentNotificationEmail = async ({
       bcc: recipientEmails,
       subject,
       text,
-      html,
-      attachments
+      html
     },
     {
       throwIfUnconfigured: true,
