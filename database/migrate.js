@@ -294,6 +294,45 @@ async function runMigration() {
     `);
     console.log('[MIGRATION] Backfilled CCAvenue metadata columns on existing `registration_payments` records.');
 
+    // 13. Add CCAvenue transaction columns and 'cancelled' status to `payments` (course fees)
+    await pool.query(`
+      ALTER TABLE \`payments\`
+      MODIFY COLUMN \`payment_status\` ENUM('pending', 'successful', 'failed', 'cancelled', 'refunded') NOT NULL DEFAULT 'pending'
+    `);
+
+    const coursePaymentColumns = [
+      ['order_id', 'VARCHAR(100) NULL DEFAULT NULL AFTER `transaction_id`'],
+      ['tid', 'VARCHAR(100) NULL DEFAULT NULL AFTER `order_id`'],
+      ['tracking_id', 'VARCHAR(100) NULL DEFAULT NULL AFTER `tid`'],
+      ['bank_ref_no', 'VARCHAR(100) NULL DEFAULT NULL AFTER `tracking_id`'],
+      ['payment_mode', 'VARCHAR(100) NULL DEFAULT NULL AFTER `bank_ref_no`'],
+      ['payment_gateway', "VARCHAR(50) NOT NULL DEFAULT 'ccavenue' AFTER `payment_method`"],
+      ['raw_response', 'TEXT NULL AFTER `receipt_url`'],
+      ['gateway_response', 'TEXT NULL AFTER `raw_response`']
+    ];
+
+    for (const [colName, colDef] of coursePaymentColumns) {
+      const [existingCol] = await pool.query('SHOW COLUMNS FROM `payments` LIKE ?', [colName]);
+      if (existingCol.length === 0) {
+        await pool.query(`ALTER TABLE \`payments\` ADD COLUMN \`${colName}\` ${colDef}`);
+        console.log(`[MIGRATION] Added \`${colName}\` column to \`payments\`.`);
+      }
+    }
+
+    const coursePaymentIndexes = [
+      ['uq_payments_order_id', 'UNIQUE INDEX `uq_payments_order_id` (`order_id`)'],
+      ['uq_payments_tid', 'UNIQUE INDEX `uq_payments_tid` (`tid`)'],
+      ['idx_payments_tracking', 'INDEX `idx_payments_tracking` (`tracking_id`)']
+    ];
+
+    for (const [idxName, idxSql] of coursePaymentIndexes) {
+      const [existingIdx] = await pool.query('SHOW INDEX FROM `payments` WHERE Key_name = ?', [idxName]);
+      if (existingIdx.length === 0) {
+        await pool.query(`ALTER TABLE \`payments\` ADD ${idxSql}`);
+        console.log(`[MIGRATION] Added index \`${idxName}\` on \`payments\`.`);
+      }
+    }
+
     console.log('\n[SUCCESS] All database migrations applied successfully!');
     process.exit(0);
   } catch (err) {

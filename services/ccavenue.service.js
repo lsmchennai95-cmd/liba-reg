@@ -239,6 +239,7 @@ export const extractResponseFields = (parsed) => {
     billingEmail: trimOrNull(parsed.billing_email),
     merchantParam1: trimOrNull(parsed.merchant_param1),
     merchantParam2: trimOrNull(parsed.merchant_param2),
+    merchantParam3: trimOrNull(parsed.merchant_param3),
     merchantParam4: trimOrNull(parsed.merchant_param4),
     raw: parsed
   };

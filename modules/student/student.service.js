@@ -565,13 +565,13 @@ export const getRegistrationFee = async (userId) => {
   };
 };
 
-const generateCcavenueOrderId = () => {
+const generateCcavenueOrderId = (prefix = 'LIBA') => {
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   const suffix = String(Date.now()).slice(-6) + String(crypto.randomInt(100, 999));
-  return `LIBA${y}${m}${d}${suffix}`;
+  return `${prefix}${y}${m}${d}${suffix}`;
 };
 
 const generateCcavenueTid = () => {
@@ -688,6 +688,136 @@ export const initiateRegistrationPayment = async (userId, requestOptions = {}) =
   };
 };
 
+const MIN_COURSE_FEE_PAYMENT = 20000;
+
+export const initiateCoursePayment = async (userId, requestOptions = {}) => {
+  const ctx = await StudentModel.getCourseFeePaymentContext(userId);
+  if (!ctx) {
+    const error = new Error('Student enrollment details not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (!ctx.is_active) {
+    const error = new Error('Please complete your registration fee payment before paying course fees.');
+    error.statusCode = 403;
+    error.redirectUrl = '../payment/';
+    throw error;
+  }
+
+  const totalFee = Math.max(0, Number(ctx.total_fee) || 0);
+  const amountPaid = Math.min(totalFee, Math.max(0, Number(ctx.amount_paid) || 0));
+  const balance = Math.max(0, Math.round((totalFee - amountPaid) * 100) / 100);
+
+  if (balance <= 0) {
+    return {
+      alreadyPaid: true,
+      message: 'Course fee is already fully paid.',
+      redirectUrl: '../dashboard/'
+    };
+  }
+
+  const minPayable = Math.min(MIN_COURSE_FEE_PAYMENT, balance);
+  const rawAmount = Number(requestOptions.amount);
+  const payableAmount = Number.isFinite(rawAmount) ? Math.round(rawAmount * 100) / 100 : NaN;
+
+  if (!Number.isFinite(payableAmount) || payableAmount <= 0) {
+    const error = new Error('Please enter a valid payment amount.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (payableAmount < minPayable) {
+    const error = new Error(`Minimum payable course fee amount is INR ${minPayable.toFixed(2)}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+  if (payableAmount > balance) {
+    const error = new Error(`Amount cannot exceed your pending course fee balance of INR ${balance.toFixed(2)}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const gatewayConfig = CcavenueService.assertCcavenueReady();
+
+  const formattedAmount = payableAmount.toFixed(2);
+  const currency = 'INR';
+  const language = requestOptions.language || 'EN';
+  const requestType = requestOptions.request_type || 'payment_initiation';
+  const billingName = ctx.full_name || ctx.first_name || 'Student';
+  const billingEmail = ctx.email;
+  const courseTitle = ctx.course_name || 'LIBA Online Programme';
+
+  if (!billingName || !billingEmail || !ctx.enrollment_id) {
+    const error = new Error('Incomplete student enrollment details for payment initiation.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const orderId = generateCcavenueOrderId('LIBACRS');
+  const tid = generateCcavenueTid();
+
+  const insertedId = await StudentModel.recordCoursePaymentOrder({
+    userId: ctx.user_id,
+    enrollmentId: ctx.enrollment_id,
+    amount: payableAmount,
+    orderId,
+    tid,
+    currency,
+    paymentGateway: 'ccavenue'
+  });
+
+  const billingPhone = ctx.mobile_number
+    ? `${ctx.country_code || '+91'}${ctx.mobile_number}`
+    : '';
+
+  const merchantData = CcavenueService.buildMerchantData({
+    request_type: requestType,
+    tid,
+    merchant_id: gatewayConfig.merchantId,
+    order_id: orderId,
+    currency,
+    redirect_url: gatewayConfig.redirectUrl,
+    cancel_url: gatewayConfig.cancelUrl,
+    language,
+    amount: formattedAmount,
+    billing_name: billingName,
+    billing_email: billingEmail,
+    billing_tel: billingPhone,
+    courses: courseTitle,
+    merchant_param1: insertedId,
+    merchant_param2: courseTitle,
+    merchant_param3: 'course_fee',
+    merchant_param4: billingPhone
+  });
+
+  let encRequest;
+  try {
+    encRequest = CcavenueService.encrypt(merchantData, gatewayConfig.workingKey);
+  } catch (encryptErr) {
+    await StudentModel.updateNonSuccessCoursePayment({
+      orderId,
+      paymentStatus: 'failed',
+      rawResponse: { error: encryptErr.message, code: encryptErr.code || 'ENCRYPTION_FAILED' }
+    });
+    throw encryptErr;
+  }
+
+  return {
+    order_id: orderId,
+    tid,
+    gateway_url: gatewayConfig.gatewayUrl,
+    encRequest,
+    access_code: gatewayConfig.accessCode
+  };
+};
+
+export const initiatePayment = async (userId, requestOptions = {}) => {
+  if (requestOptions && requestOptions.paymentType === 'course_fee') {
+    return initiateCoursePayment(userId, requestOptions);
+  }
+  return initiateRegistrationPayment(userId, requestOptions);
+};
+
 export const handleCcavenueResponse = async ({ encResp }) => {
   const frontendBase = (env.frontendUrl || 'http://localhost:8001').replace(/\/$/, '');
   const successBaseUrl = `${frontendBase}/student/payment-success/`;
@@ -757,16 +887,31 @@ export const handleCcavenueResponse = async ({ encResp }) => {
     trackingId,
     bankRefNo,
     paymentMode,
-    merchantParam1
+    merchantParam1,
+    merchantParam3
   } = extracted;
+
+  let isCourseFee = merchantParam3 === 'course_fee' || orderId.startsWith('LIBACRS');
+  const findById = (id) => (isCourseFee ? StudentModel.findCoursePaymentById(id) : StudentModel.findRegistrationPaymentById(id));
+  const findByOrderId = (oid) => (isCourseFee ? StudentModel.findCoursePaymentByOrderId(oid) : StudentModel.findRegistrationPaymentByOrderId(oid));
+  const updateNonSuccess = (payload) => (isCourseFee
+    ? StudentModel.updateNonSuccessCoursePayment(payload)
+    : StudentModel.updateNonSuccessRegistrationPayment(payload));
 
   // Locate payment record via merchant_param1 first (per PHP handler flow), then fallback to order_id
   let existingOrder = null;
   if (merchantParam1) {
-    existingOrder = await StudentModel.findRegistrationPaymentById(merchantParam1);
+    existingOrder = await findById(merchantParam1);
+    if (!existingOrder && !isCourseFee) {
+      const courseOrder = await StudentModel.findCoursePaymentByOrderId(orderId);
+      if (courseOrder) {
+        isCourseFee = true;
+        existingOrder = courseOrder;
+      }
+    }
     if (!existingOrder || existingOrder.order_id !== orderId) {
       if (existingOrder) {
-        await StudentModel.updateNonSuccessRegistrationPayment({
+        await updateNonSuccess({
           orderId: existingOrder.order_id,
           paymentStatus: 'failed',
           trackingId,
@@ -775,21 +920,32 @@ export const handleCcavenueResponse = async ({ encResp }) => {
           rawResponse: { ...parsed, verificationError: 'order_id mismatch with merchant_param1' }
         });
       }
+      const typeSuffix = isCourseFee ? '&type=course_fee' : '';
       return {
         statusCode: 400,
         outcome: 'ownership_mismatch',
-        redirectUrl: `${failedBaseUrl}?status=invalid_response&orderId=${encodeURIComponent(orderId)}`,
+        redirectUrl: `${failedBaseUrl}?status=invalid_response&orderId=${encodeURIComponent(orderId)}${typeSuffix}`,
         message: 'Order reference mismatch with payment record ID.'
       };
     }
   } else {
-    existingOrder = await StudentModel.findRegistrationPaymentByOrderId(orderId);
+    existingOrder = await findByOrderId(orderId);
+    if (!existingOrder && !isCourseFee) {
+      const courseOrder = await StudentModel.findCoursePaymentByOrderId(orderId);
+      if (courseOrder) {
+        isCourseFee = true;
+        existingOrder = courseOrder;
+      }
+    }
   }
+
+  const typeSuffix = isCourseFee ? '&type=course_fee' : '';
+  const paymentTypeLabel = isCourseFee ? 'Course Fee' : 'Registration Fee';
 
   if (!existingOrder) {
     return {
       statusCode: 404,
-      redirectUrl: `${failedBaseUrl}?status=unknown_order&orderId=${encodeURIComponent(orderId)}`,
+      redirectUrl: `${failedBaseUrl}?status=unknown_order&orderId=${encodeURIComponent(orderId)}${typeSuffix}`,
       outcome: 'unknown_order',
       message: `Order ${orderId} not found.`
     };
@@ -799,17 +955,21 @@ export const handleCcavenueResponse = async ({ encResp }) => {
   const returnedAmount = returnedAmountStr !== null ? parseFloat(returnedAmountStr) : NaN;
 
   // Idempotency & never overwrite an already successful transaction
-  if (existingOrder.payment_status === 'successful' && existingOrder.is_active) {
+  const alreadyVerified = isCourseFee
+    ? existingOrder.payment_status === 'successful'
+    : (existingOrder.payment_status === 'successful' && existingOrder.is_active);
+
+  if (alreadyVerified) {
     return {
       statusCode: 302,
       alreadyProcessed: true,
       outcome: 'already_paid',
-      redirectUrl: `${successBaseUrl}?orderId=${encodeURIComponent(orderId)}&trackingId=${encodeURIComponent(existingOrder.tracking_id || existingOrder.transaction_id || '')}&duplicate=1`,
-      message: 'Payment already verified and account is active.'
+      redirectUrl: `${successBaseUrl}?orderId=${encodeURIComponent(orderId)}&trackingId=${encodeURIComponent(existingOrder.tracking_id || existingOrder.transaction_id || '')}&duplicate=1${typeSuffix}`,
+      message: isCourseFee ? 'Course fee payment already verified.' : 'Payment already verified and account is active.'
     };
   }
 
-  const expectedAmount = parseFloat(existingOrder.final_reg_fee);
+  const expectedAmount = parseFloat(isCourseFee ? existingOrder.amount : existingOrder.final_reg_fee);
   const expectedCurrency = String(existingOrder.currency || 'INR').trim().toUpperCase();
 
   if (normalizedStatus === 'success') {
@@ -817,7 +977,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
     const currencyValid = returnedCurrency === expectedCurrency;
 
     if (!amountValid || !currencyValid) {
-      await StudentModel.updateNonSuccessRegistrationPayment({
+      await (isCourseFee ? StudentModel.updateNonSuccessCoursePayment : StudentModel.updateNonSuccessRegistrationPayment)({
         orderId,
         paymentStatus: 'failed',
         trackingId,
@@ -832,12 +992,12 @@ export const handleCcavenueResponse = async ({ encResp }) => {
       return {
         statusCode: 400,
         outcome: 'amount_mismatch',
-        redirectUrl: `${failedBaseUrl}?status=amount_mismatch&orderId=${encodeURIComponent(orderId)}`,
+        redirectUrl: `${failedBaseUrl}?status=amount_mismatch&orderId=${encodeURIComponent(orderId)}${typeSuffix}`,
         message: 'Payment amount or currency verification failed.'
       };
     }
 
-    const result = await StudentModel.completeRegistrationPayment({
+    const result = await (isCourseFee ? StudentModel.completeCoursePayment : StudentModel.completeRegistrationPayment)({
       orderId,
       transactionId: trackingId || bankRefNo || orderId,
       trackingId,
@@ -859,7 +1019,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
           orderId,
           transactionId: resolvedTransactionId,
           amount: expectedAmount,
-          paymentType: 'Registration Fee',
+          paymentType: paymentTypeLabel,
           courseName,
           applicationNumber: existingOrder.application_no || 'N/A',
           paidAt
@@ -868,25 +1028,27 @@ export const handleCcavenueResponse = async ({ encResp }) => {
         console.error('[EMAIL-ERROR] Failed to send payment success email:', mailErr.message);
       }
 
-      const studentPhone = existingOrder.mobile_number
-        ? `${existingOrder.country_code || '+91'} ${existingOrder.mobile_number}`.trim()
-        : 'N/A';
+      if (!isCourseFee) {
+        const studentPhone = existingOrder.mobile_number
+          ? `${existingOrder.country_code || '+91'} ${existingOrder.mobile_number}`.trim()
+          : 'N/A';
 
-      await triggerPaymentSuccessNotification({
-        userId: existingOrder.user_id,
-        fullName: studentName,
-        email: existingOrder.email,
-        phone: studentPhone,
-        courseName,
-        specializationName: existingOrder.specialization_name || null,
-        studentId: existingOrder.student_id || null,
-        applicationNo: existingOrder.application_no || null,
-        orderId,
-        transactionId: resolvedTransactionId,
-        amount: expectedAmount,
-        paymentMode: paymentMode || result.order?.payment_mode || null,
-        paidAt
-      });
+        await triggerPaymentSuccessNotification({
+          userId: existingOrder.user_id,
+          fullName: studentName,
+          email: existingOrder.email,
+          phone: studentPhone,
+          courseName,
+          specializationName: existingOrder.specialization_name || null,
+          studentId: existingOrder.student_id || null,
+          applicationNo: existingOrder.application_no || null,
+          orderId,
+          transactionId: resolvedTransactionId,
+          amount: expectedAmount,
+          paymentMode: paymentMode || result.order?.payment_mode || null,
+          paidAt
+        });
+      }
     }
 
     const queryParams = new URLSearchParams({
@@ -895,6 +1057,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
       bankRefNo: bankRefNo || '',
       status: 'success'
     });
+    if (isCourseFee) queryParams.set('type', 'course_fee');
 
     return {
       statusCode: 302,
@@ -916,7 +1079,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
     resultStatusParam = 'pending';
   }
 
-  const updateRes = await StudentModel.updateNonSuccessRegistrationPayment({
+  const updateRes = await (isCourseFee ? StudentModel.updateNonSuccessCoursePayment : StudentModel.updateNonSuccessRegistrationPayment)({
     orderId,
     paymentStatus: mappedDbStatus,
     trackingId,
@@ -930,7 +1093,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
       statusCode: 302,
       alreadyProcessed: true,
       outcome: 'already_paid',
-      redirectUrl: `${successBaseUrl}?orderId=${encodeURIComponent(orderId)}&trackingId=${encodeURIComponent(updateRes.order.tracking_id || updateRes.order.transaction_id || '')}&duplicate=1`,
+      redirectUrl: `${successBaseUrl}?orderId=${encodeURIComponent(orderId)}&trackingId=${encodeURIComponent(updateRes.order.tracking_id || updateRes.order.transaction_id || '')}&duplicate=1${typeSuffix}`,
       message: 'Transaction already verified as successful.'
     };
   }
@@ -942,7 +1105,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
         name: existingOrder.full_name || existingOrder.first_name || 'Student',
         orderId,
         amount: expectedAmount,
-        paymentType: 'Registration Fee',
+        paymentType: paymentTypeLabel,
         courseName: existingOrder.course_name || 'LIBA Online Programme',
         applicationNumber: existingOrder.application_no || 'N/A',
         reason: failureMessage || statusMessage || `Transaction ${orderStatus || 'failed'} at CCAvenue gateway`
@@ -957,6 +1120,7 @@ export const handleCcavenueResponse = async ({ encResp }) => {
     orderId
   });
   if (trackingId) failQuery.set('trackingId', trackingId);
+  if (isCourseFee) failQuery.set('type', 'course_fee');
 
   return {
     statusCode: 302,

@@ -105,7 +105,7 @@ export const getRegistrationFee = withSafeHandler(
 export const initiateRegistrationPayment = withSafeHandler(
   async (req, res) => {
     const userId = req.user.userId || req.user.id;
-    const result = await StudentService.initiateRegistrationPayment(userId, req.body || {});
+    const result = await StudentService.initiatePayment(userId, req.body || {});
     return res.status(200).json({
       success: true,
       message: result.alreadyPaid ? result.message : 'Payment initiated successfully',

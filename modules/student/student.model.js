@@ -556,14 +556,14 @@ export const getStudentPayments = async (userId) => {
   const coursePaymentsSql = `
     SELECT 
       p.id AS payment_id,
-      NULL AS order_id,
-      p.transaction_id,
-      NULL AS tracking_id,
-      NULL AS bank_ref_no,
-      p.payment_method AS payment_mode,
+      p.order_id,
+      COALESCE(p.transaction_id, p.tracking_id, p.order_id) AS transaction_id,
+      p.tracking_id,
+      p.bank_ref_no,
+      p.payment_mode,
       p.amount,
       p.currency,
-      p.payment_method,
+      COALESCE(p.payment_gateway, p.payment_method, 'ccavenue') AS payment_method,
       'course_fee' AS payment_type,
       p.payment_status,
       p.receipt_url,
@@ -571,7 +571,7 @@ export const getStudentPayments = async (userId) => {
       p.created_at
     FROM payments p
     WHERE p.user_id = ?
-    ORDER BY p.paid_at DESC
+    ORDER BY COALESCE(p.paid_at, p.created_at) DESC
   `;
 
   const regPaymentsSql = `
@@ -609,4 +609,304 @@ export const getStudentPayments = async (userId) => {
     const dateB = new Date(b.paid_at || b.created_at || 0).getTime();
     return dateB - dateA;
   });
+};
+
+export const getCourseFeePaymentContext = async (userId) => {
+  const sql = `
+    SELECT
+      u.id AS user_id,
+      u.email,
+      u.is_active,
+      u.is_verified,
+      sp.id AS student_profile_id,
+      sp.student_id,
+      sp.application_no,
+      sp.first_name,
+      sp.last_name,
+      CONCAT(sp.first_name, IF(sp.last_name IS NOT NULL AND sp.last_name != '', CONCAT(' ', sp.last_name), '')) AS full_name,
+      sp.country_code,
+      sp.mobile_number,
+      e.id AS enrollment_id,
+      e.course_id,
+      e.specialization_id,
+      e.enrollment_status,
+      e.total_fee,
+      e.amount_paid,
+      e.outstanding_balance,
+      c.name AS course_name,
+      s.name AS specialization_name
+    FROM users u
+    INNER JOIN student_profiles sp ON sp.user_id = u.id
+    INNER JOIN enrollments e ON e.user_id = u.id
+    LEFT JOIN courses c ON c.id = e.course_id
+    LEFT JOIN specializations s ON s.id = e.specialization_id
+    WHERE u.id = ?
+    LIMIT 1
+  `;
+  const rows = await query(sql, [userId]);
+  return rows[0] || null;
+};
+
+export const recordCoursePaymentOrder = async ({
+  userId,
+  enrollmentId,
+  amount,
+  orderId,
+  tid,
+  currency = 'INR',
+  paymentGateway = 'ccavenue'
+}) => {
+  const sql = `
+    INSERT INTO payments (
+      enrollment_id,
+      user_id,
+      transaction_id,
+      order_id,
+      tid,
+      amount,
+      currency,
+      payment_method,
+      payment_gateway,
+      payment_status,
+      paid_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())
+  `;
+  const result = await query(sql, [
+    enrollmentId,
+    userId,
+    orderId,
+    orderId,
+    tid,
+    amount,
+    currency,
+    paymentGateway,
+    paymentGateway
+  ]);
+  return result.insertId;
+};
+
+const COURSE_PAYMENT_SELECT = `
+  SELECT
+    p.*,
+    u.email,
+    u.is_active,
+    sp.student_id,
+    sp.application_no,
+    sp.first_name,
+    sp.last_name,
+    CONCAT(sp.first_name, IF(sp.last_name IS NOT NULL AND sp.last_name != '', CONCAT(' ', sp.last_name), '')) AS full_name,
+    sp.country_code,
+    sp.mobile_number,
+    c.name AS course_name,
+    s.name AS specialization_name
+  FROM payments p
+  INNER JOIN users u ON u.id = p.user_id
+  LEFT JOIN student_profiles sp ON sp.user_id = p.user_id
+  LEFT JOIN enrollments e ON e.id = p.enrollment_id
+  LEFT JOIN courses c ON c.id = e.course_id
+  LEFT JOIN specializations s ON s.id = e.specialization_id
+`;
+
+export const findCoursePaymentById = async (id) => {
+  const rows = await query(`${COURSE_PAYMENT_SELECT} WHERE p.id = ? LIMIT 1`, [id]);
+  return rows[0] || null;
+};
+
+export const findCoursePaymentByOrderId = async (orderId) => {
+  const rows = await query(`${COURSE_PAYMENT_SELECT} WHERE p.order_id = ? LIMIT 1`, [orderId]);
+  return rows[0] || null;
+};
+
+export const completeCoursePayment = async ({
+  orderId,
+  transactionId,
+  trackingId,
+  bankRefNo,
+  paymentMode,
+  rawResponse
+}) => {
+  const connection = await getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [orders] = await connection.execute(
+      'SELECT * FROM payments WHERE order_id = ? FOR UPDATE',
+      [orderId]
+    );
+
+    if (orders.length === 0) {
+      throw new Error(`Course payment order ${orderId} not found`);
+    }
+
+    const order = orders[0];
+
+    if (order.payment_status === 'successful') {
+      await connection.commit();
+      return {
+        alreadyProcessed: true,
+        order
+      };
+    }
+
+    const [enrollments] = await connection.execute(
+      'SELECT id, total_fee, amount_paid, outstanding_balance, enrollment_status FROM enrollments WHERE id = ? FOR UPDATE',
+      [order.enrollment_id]
+    );
+
+    if (enrollments.length === 0) {
+      throw new Error(`Enrollment ${order.enrollment_id} not found for course payment order ${orderId}`);
+    }
+
+    const enrollment = enrollments[0];
+    const totalFee = Math.max(0, Number(enrollment.total_fee) || 0);
+    const currentPaid = Math.max(0, Number(enrollment.amount_paid) || 0);
+    const paidNow = Math.max(0, Number(order.amount) || 0);
+    const nextAmountPaid = Math.min(totalFee, Math.round((currentPaid + paidNow) * 100) / 100);
+    const nextOutstanding = Math.max(0, Math.round((totalFee - nextAmountPaid) * 100) / 100);
+    const nextEnrollmentStatus = nextOutstanding <= 0
+      ? 'enrolled'
+      : (enrollment.enrollment_status === 'pending' ? 'admitted' : enrollment.enrollment_status);
+
+    const rawResponseStr = rawResponse ? JSON.stringify(rawResponse) : null;
+    const resolvedTxnId = transactionId || trackingId || bankRefNo || orderId;
+
+    await connection.execute(
+      `UPDATE payments
+       SET payment_status = 'successful',
+           paid_at = NOW(),
+           transaction_id = ?,
+           tracking_id = COALESCE(?, tracking_id),
+           bank_ref_no = COALESCE(?, bank_ref_no),
+           payment_mode = COALESCE(?, payment_mode),
+           payment_method = COALESCE(?, payment_method),
+           raw_response = ?,
+           gateway_response = ?,
+           updated_at = NOW()
+       WHERE order_id = ?`,
+      [
+        resolvedTxnId,
+        trackingId || null,
+        bankRefNo || null,
+        paymentMode || null,
+        paymentMode || order.payment_method || 'ccavenue',
+        rawResponseStr,
+        rawResponseStr,
+        orderId
+      ]
+    );
+
+    await connection.execute(
+      `UPDATE enrollments
+       SET amount_paid = ?,
+           outstanding_balance = ?,
+           enrollment_status = ?,
+           enrolled_at = COALESCE(enrolled_at, NOW()),
+           updated_at = NOW()
+       WHERE id = ?`,
+      [nextAmountPaid, nextOutstanding, nextEnrollmentStatus, order.enrollment_id]
+    );
+
+    await connection.commit();
+
+    return {
+      alreadyProcessed: false,
+      order: {
+        ...order,
+        payment_status: 'successful',
+        transaction_id: resolvedTxnId,
+        tracking_id: trackingId || order.tracking_id || null,
+        bank_ref_no: bankRefNo || order.bank_ref_no || null,
+        payment_mode: paymentMode || order.payment_mode || null,
+        paid_at: new Date()
+      },
+      enrollment: {
+        total_fee: totalFee,
+        amount_paid: nextAmountPaid,
+        outstanding_balance: nextOutstanding,
+        enrollment_status: nextEnrollmentStatus
+      }
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+export const updateNonSuccessCoursePayment = async ({
+  orderId,
+  paymentStatus = 'failed',
+  trackingId,
+  bankRefNo,
+  paymentMode,
+  rawResponse
+}) => {
+  const connection = await getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [orders] = await connection.execute(
+      'SELECT * FROM payments WHERE order_id = ? FOR UPDATE',
+      [orderId]
+    );
+
+    if (orders.length === 0) {
+      await connection.commit();
+      return null;
+    }
+
+    const order = orders[0];
+
+    if (order.payment_status === 'successful') {
+      await connection.commit();
+      return {
+        alreadySuccessful: true,
+        order
+      };
+    }
+
+    const allowedStatuses = ['pending', 'failed', 'cancelled'];
+    const targetStatus = allowedStatuses.includes(paymentStatus) ? paymentStatus : 'failed';
+    const rawResponseStr = rawResponse ? JSON.stringify(rawResponse) : null;
+
+    await connection.execute(
+      `UPDATE payments
+       SET payment_status = ?,
+           tracking_id = COALESCE(?, tracking_id),
+           bank_ref_no = COALESCE(?, bank_ref_no),
+           payment_mode = COALESCE(?, payment_mode),
+           raw_response = ?,
+           gateway_response = ?,
+           updated_at = NOW()
+       WHERE order_id = ?`,
+      [
+        targetStatus,
+        trackingId || null,
+        bankRefNo || null,
+        paymentMode || null,
+        rawResponseStr,
+        rawResponseStr,
+        orderId
+      ]
+    );
+
+    await connection.commit();
+
+    return {
+      alreadySuccessful: false,
+      order: {
+        ...order,
+        payment_status: targetStatus,
+        tracking_id: trackingId || order.tracking_id || null,
+        bank_ref_no: bankRefNo || order.bank_ref_no || null,
+        payment_mode: paymentMode || order.payment_mode || null
+      }
+    };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 };

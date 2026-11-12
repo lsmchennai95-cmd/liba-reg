@@ -345,24 +345,25 @@ const COMBINED_PAYMENTS_SUBQUERY = `
     p.id AS numeric_id,
     p.user_id,
     'course_fee' AS payment_type,
-    NULL AS order_id,
-    p.transaction_id,
-    NULL AS tracking_id,
-    NULL AS bank_ref_no,
-    p.payment_method AS payment_mode,
+    p.order_id,
+    COALESCE(p.transaction_id, p.tracking_id, p.order_id) AS transaction_id,
+    p.tracking_id,
+    p.bank_ref_no,
+    p.payment_mode,
     p.amount,
     p.currency,
-    p.payment_method AS payment_gateway,
+    COALESCE(p.payment_gateway, p.payment_method, 'ccavenue') AS payment_gateway,
     p.payment_status AS raw_payment_status,
     CASE
       WHEN p.payment_status = 'successful' THEN 'paid'
+      WHEN p.payment_status = 'cancelled' THEN 'cancelled'
       WHEN p.payment_status = 'failed' THEN 'failed'
       WHEN p.payment_status = 'refunded' THEN 'refunded'
       ELSE 'pending'
     END AS display_status,
     p.paid_at,
     p.created_at,
-    NULL AS raw_response
+    COALESCE(p.gateway_response, p.raw_response) AS raw_response
   FROM payments p
 `;
 
