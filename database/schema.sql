@@ -33,7 +33,7 @@ CREATE TABLE `student_profiles` (
   `country_code` VARCHAR(10) NOT NULL DEFAULT '+91',
   `mobile_number` VARCHAR(20) NOT NULL,
   `terms_accepted` TINYINT(1) NOT NULL DEFAULT 1,
-  `application_status` ENUM('pending_verification', 'email_verified', 'awaiting_payment', 'payment_pending', 'payment_failed', 'submitted', 'pending_review', 'under_scrutiny', 'approved', 'rejected') NOT NULL DEFAULT 'pending_verification',
+  `application_status` ENUM('pending_verification', 'email_verified', 'awaiting_payment', 'payment_pending', 'payment_failed', 'submitted', 'scholarship_submitted', 'pending_review', 'under_scrutiny', 'approved', 'rejected') NOT NULL DEFAULT 'pending_verification',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

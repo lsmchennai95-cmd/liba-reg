@@ -67,7 +67,11 @@ export const sendInternalPaymentNotificationEmail = async ({
       hour12: true
     }) + ' IST';
 
-  const subject = `Admissions Payment Alert! ${fullName} completed registration payment (${formattedAmount}).`;
+  const numericAmount = Number(payment.amount || 0);
+  const subjectAmount = Number.isFinite(numericAmount)
+    ? (Number.isInteger(numericAmount) ? String(numericAmount) : numericAmount.toFixed(2))
+    : '0';
+  const subject = `registration - ${subjectAmount} Name - ${fullName}`;
   const attachments = getLogoAttachments('liba_full_logo_footer.png');
 
   const html = renderEmailTemplate(
