@@ -52,7 +52,7 @@ async function runMigration() {
     await pool.query(`
       ALTER TABLE \`student_profiles\` 
       MODIFY COLUMN \`application_status\` 
-      ENUM('pending_verification', 'email_verified', 'awaiting_payment', 'payment_pending', 'payment_failed', 'submitted', 'pending_review', 'under_scrutiny', 'approved', 'rejected') 
+      ENUM('pending_verification', 'email_verified', 'awaiting_payment', 'payment_pending', 'payment_failed', 'submitted', 'scholarship_submitted', 'pending_review', 'under_scrutiny', 'approved', 'rejected') 
       NOT NULL DEFAULT 'pending_verification'
     `);
     console.log('[MIGRATION] Updated `student_profiles.application_status` enum options.');
