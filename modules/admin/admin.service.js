@@ -197,6 +197,7 @@ export const getStudentById = async (rawId) => {
   const academicDetails = await StudentModel.getStudentAcademicDetails(userId);
   const paymentRows = await AdminModel.getPaymentsByStudentId(userId);
   const parsedLatestGateway = safeParseGatewayResponse(student.latest_raw_response);
+  const claim = await AdminModel.getLatestScholarshipClaimByUserId(userId);
 
   return {
     personalInfo: {
@@ -260,6 +261,17 @@ export const getStudentById = async (rawId) => {
           scholarshipStatus: student.enrollment_scholarship_amount > 0 ? 'applied' : 'not_applied',
           appliedAt: null
         },
+    scholarshipClaim: claim
+      ? {
+          id: claim.id,
+          totalDiscount: parseFloat(claim.total_discount || 0),
+          status: claim.effective_status || claim.status,
+          rawStatus: claim.status,
+          expiresAt: claim.expires_at,
+          isExpired: (claim.effective_status || claim.status) === 'expired',
+          createdAt: claim.created_at
+        }
+      : null,
     registrationPayment: {
       paymentStatus: student.effective_payment_status,
       rawStatus: student.raw_payment_status || null,
@@ -307,4 +319,85 @@ export const getPayments = async (filters) => {
     pagination: result.pagination
   };
 };
+
+export const getScholarshipTimer = async () => {
+  const val = await AdminModel.getSystemSetting('scholarship_timer_hours');
+  const hours = val !== null && !isNaN(parseInt(val, 10)) ? parseInt(val, 10) : 2;
+  return {
+    hours,
+    scholarship_timer_hours: hours
+  };
+};
+
+export const updateScholarshipTimer = async (hoursInput) => {
+  const hours = parseInt(hoursInput, 10);
+  if (isNaN(hours) || hours < 1 || hours > 168) {
+    const error = new Error('Scholarship timer hours must be an integer between 1 and 168 (1 week).');
+    error.statusCode = 400;
+    throw error;
+  }
+  await AdminModel.upsertSystemSetting('scholarship_timer_hours', hours);
+  return {
+    hours,
+    scholarship_timer_hours: hours
+  };
+};
+
+export const reactivateStudentTimer = async (rawId, minutesInput) => {
+  const userId = parsePositiveId(rawId, 'student ID');
+  const student = await AdminModel.getStudentById(userId);
+  if (!student) {
+    const error = new Error('Student not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const minutes = parseInt(minutesInput, 10);
+  if (isNaN(minutes) || minutes < 1 || minutes > 10080) {
+    const error = new Error('Please enter a valid duration between 1 and 10080 minutes (max 7 days).');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const claim = await AdminModel.getLatestScholarshipClaimByUserId(userId);
+  if (!claim) {
+    const error = new Error('No scholarship claim found for this student to reactivate.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // Prevent reactivating locked_in or used claims
+  if (claim.status === 'locked_in') {
+    const error = new Error('Cannot reactivate scholarship: claim is already locked in.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (claim.status === 'used') {
+    const error = new Error('Cannot reactivate scholarship: claim has already been used.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Only allow reactivation for expired claims
+  const isExpired = claim.status === 'expired' || claim.effective_status === 'expired';
+  if (!isExpired) {
+    const error = new Error('Scholarship timer is currently active. Reactivation is only available for expired claims.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const updatedClaim = await AdminModel.reactivateScholarshipClaim(claim.id, minutes);
+
+  return {
+    studentId: student.student_id,
+    userId,
+    claimId: updatedClaim?.id,
+    status: 'active',
+    total_discount: parseFloat(updatedClaim?.total_discount || 0),
+    minutes,
+    expiresAt: updatedClaim?.expires_at,
+    expires_at: updatedClaim?.expires_at
+  };
+};
+
 

@@ -116,24 +116,34 @@ export const getStudentDashboard = async (userId) => {
   const regFeeDetails = await StudentModel.getRegistrationFeeDetails(userId);
   const payments = await StudentModel.getStudentPayments(userId);
   const academicDetails = await StudentModel.getStudentAcademicDetails(userId);
+  const latestClaim = await StudentModel.getLatestScholarshipClaim(userId);
 
   const courseCodeOrName = profile.course_code || profile.course_name || 'PGDM';
   const courseConfig = getCourseScholarshipConfig(courseCodeOrName);
 
-  // Financial Business Rule:
-  // Registration Fee and Course Fee are two completely separate financial transactions.
-  // Scholarship applies EXCLUSIVELY to the Course Fee, never to the Registration Fee.
+  const claimStatus = latestClaim?.status || 'not_applied';
+  const isLockedIn = claimStatus === 'locked_in';
+  const isRegPaid = Boolean(
+    regFeeDetails?.reg_payment_status === 'successful' ||
+    (await StudentModel.hasSuccessfulRegistrationPayment(userId))
+  );
+
+  // Financial Rule 1, 2, 3:
+  // Registration Fee and Course Fee are completely separate financial transactions.
+  // Registration Fee is mandatory before Course Fee payment.
+  // The scholarship discount applies EXCLUSIVELY to the Course Fee only when:
+  // 1. Registration Fee is paid, AND
+  // 2. Scholarship claim status is `locked_in`.
+  // An `active` or `expired` claim must NOT reduce the Course Fee.
   const originalTotalFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 350000.00;
-  const scholarshipAmount = feeSummary ? parseFloat(feeSummary.scholarship_amount || 0.00) : 0.00;
-  const scholarshipCode = feeSummary?.scholarship_code || null;
-  const totalCourseFee = feeSummary
-    ? parseFloat(feeSummary.total_fee)
-    : Math.max(0, originalTotalFee - scholarshipAmount);
+  const rawScholarshipAmount = latestClaim
+    ? parseFloat(latestClaim.total_discount || 0.00)
+    : (feeSummary ? parseFloat(feeSummary.scholarship_amount || 0.00) : 0.00);
+  const applicableDiscount = (isRegPaid && isLockedIn) ? rawScholarshipAmount : 0.00;
+  const totalCourseFee = Math.max(0, originalTotalFee - applicableDiscount);
   const totalAmountPaid = feeSummary ? parseFloat(feeSummary.amount_paid || 0.00) : 0.00;
-  const outstandingBalance = feeSummary
-    ? parseFloat(feeSummary.outstanding_balance)
-    : Math.max(0, totalCourseFee - totalAmountPaid);
-  const registrationFeePaid = feeSummary ? parseFloat(feeSummary.registration_fee_paid || 0.00) : 0.00;
+  const outstandingBalance = Math.max(0, totalCourseFee - totalAmountPaid);
+  const registrationFeePaid = isRegPaid ? parseFloat(feeSummary?.registration_fee_paid || regFeeDetails?.original_registration_fee || 3100.00) : 0.00;
 
   let scholarshipBreakdown = null;
   if (academicDetails && courseConfig.isEligible) {
@@ -141,11 +151,18 @@ export const getStudentDashboard = async (userId) => {
       courseCodeOrName,
       twelfthPercentage: academicDetails.twelfth_percentage,
       ugPercentage: academicDetails.ug_percentage,
-      promoCodeAmount: scholarshipAmount
+      promoCodeAmount: applicableDiscount
     });
   }
 
   return {
+    registration_fee_paid: isRegPaid,
+    scholarship_status: claimStatus,
+    total_discount: rawScholarshipAmount,
+    expires_at: latestClaim?.expires_at || null,
+    course_fee: originalTotalFee,
+    applicable_scholarship_discount: applicableDiscount,
+    course_fee_payable: totalCourseFee,
     studentInfo: {
       studentId: profile.student_id,
       applicationNumber: profile.application_no,
@@ -166,18 +183,31 @@ export const getStudentDashboard = async (userId) => {
       applicationStatus: profile.application_status,
       enrollmentStatus: profile.enrollment_status || 'pending',
       hasSubmittedAcademics: Boolean(academicDetails),
-      hasScholarshipApplied: scholarshipAmount > 0
+      hasScholarshipApplied: applicableDiscount > 0
     },
+    scholarship_status: claimStatus,
+    expires_at: latestClaim?.expires_at || null,
+    scholarshipStatus: claimStatus,
+    expiresAt: latestClaim?.expires_at || null,
+    scholarshipClaim: latestClaim ? {
+      status: claimStatus,
+      totalDiscount: rawScholarshipAmount,
+      expiresAt: latestClaim.expires_at
+    } : null,
     feeInfo: {
       totalCourseFee,
       originalTotalFee,
-      scholarshipAmount,
-      scholarshipCode,
+      scholarshipAmount: applicableDiscount,
+      scholarshipCode: isLockedIn ? (feeSummary?.scholarship_code || null) : null,
       scholarshipBreakdown,
+      scholarship_status: claimStatus,
+      expires_at: latestClaim?.expires_at || null,
+      scholarshipStatus: claimStatus,
+      expiresAt: latestClaim?.expires_at || null,
       totalAmountPaid,
       outstandingBalance,
       registrationFeePaid,
-      registrationPaymentStatus: feeSummary?.registration_payment_status || 'unpaid'
+      registrationPaymentStatus: isRegPaid ? 'successful' : (feeSummary?.registration_payment_status || 'unpaid')
     },
     paymentInfo: {
       latestPayment: payments.length > 0 ? payments[0] : null,
@@ -380,17 +410,33 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
   });
 
   // Critical Financial Rule: Apply scholarship discount EXCLUSIVELY to course fee in enrollments
+  let claim = null;
+  const isRegPaid = await StudentModel.hasSuccessfulRegistrationPayment(effectiveUserId);
+  const timerSetting = await StudentModel.getSystemSetting('scholarship_timer_hours');
+  const timerHours = timerSetting !== null && !isNaN(parseInt(timerSetting, 10)) ? parseInt(timerSetting, 10) : 2;
+
   if (scholarshipAmount > 0) {
     await StudentModel.applyScholarshipToCourseFee({
       userId: effectiveUserId,
       promoCode: promoCode || 'MERIT',
       scholarshipAmount
     });
+
+    claim = await StudentModel.createOrUpdateScholarshipClaim({
+      userId: effectiveUserId,
+      totalDiscount: scholarshipAmount,
+      hours: timerHours,
+      isRegFeePaid: isRegPaid
+    });
   }
 
   const feeSummary = await StudentModel.getStudentFeeAndPaymentSummary(effectiveUserId);
   const originalCourseFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 350000.00;
   const finalCourseFee = feeSummary ? parseFloat(feeSummary.total_fee) : Math.max(0, originalCourseFee - scholarshipAmount);
+
+  const claimStatus = claim ? claim.status : (scholarshipAmount > 0 ? (isRegPaid ? 'locked_in' : 'active') : 'none');
+  const nextStep = isRegPaid ? 'dashboard' : 'payment';
+  const redirectUrl = isRegPaid ? '../dashboard/' : '../payment/';
 
   return {
     applicationCompleted: true,
@@ -401,6 +447,13 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     scholarshipCode: promoCode,
     scholarshipBreakdown: breakdown,
     formattedAmount: `₹${scholarshipAmount.toLocaleString('en-IN')}`,
+    registration_fee_paid: isRegPaid,
+    scholarship_status: claimStatus,
+    total_discount: scholarshipAmount,
+    expires_at: claim ? claim.expires_at : null,
+    timer_hours: timerHours,
+    nextStep,
+    redirectUrl,
     courseFee: {
       originalCourseFee,
       scholarshipAmount,
@@ -411,12 +464,10 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
       note: 'Scholarship discount has been applied exclusively to your course tuition fee.'
     },
     registrationFee: {
-      paid: true,
+      paid: isRegPaid,
       amount: feeSummary?.registration_fee || 3100.00,
-      note: 'Registration fee was already paid separately with ₹0 scholarship deduction.'
-    },
-    nextStep: 'dashboard',
-    redirectUrl: '../dashboard/'
+      note: isRegPaid ? 'Registration fee was paid.' : 'Registration fee must be paid within timer to lock in scholarship.'
+    }
   };
 };
 
@@ -516,6 +567,8 @@ export const getRegistrationFee = async (userId) => {
     throw error;
   }
 
+  const latestClaim = await StudentModel.getLatestScholarshipClaim(userId);
+
   // Critical Financial Rule: Registration fee comes from course_fees and receives ZERO scholarship discount
   const originalRegFee = parseFloat(feeDetails.original_registration_fee) || 3100.00;
   const scholarshipDiscount = 0.00;
@@ -524,6 +577,10 @@ export const getRegistrationFee = async (userId) => {
   const isPaid = feeDetails.reg_payment_status === 'successful';
 
   return {
+    scholarship_status: latestClaim ? latestClaim.status : 'none',
+    expires_at: latestClaim ? latestClaim.expires_at : null,
+    scholarshipStatus: latestClaim ? latestClaim.status : 'none',
+    expiresAt: latestClaim ? latestClaim.expires_at : null,
     student: {
       userId: feeDetails.user_id,
       name: feeDetails.full_name,
@@ -698,14 +755,28 @@ export const initiateCoursePayment = async (userId, requestOptions = {}) => {
     throw error;
   }
 
-  if (!ctx.is_active) {
-    const error = new Error('Please complete your registration fee payment before paying course fees.');
+  const isRegPaid = Boolean(
+    ctx.registration_fee_paid ||
+    (await StudentModel.hasSuccessfulRegistrationPayment(userId))
+  );
+
+  if (!isRegPaid) {
+    const error = new Error('Please complete your registration fee payment before proceeding to Course Fee payment.');
     error.statusCode = 403;
     error.redirectUrl = '../payment/';
     throw error;
   }
 
-  const totalFee = Math.max(0, Number(ctx.total_fee) || 0);
+  // Critical Business Rule 3:
+  // The scholarship discount applies EXCLUSIVELY to the Course Fee only after:
+  // 1. The student successfully pays the Registration Fee.
+  // 2. The scholarship claim has been confirmed as `locked_in` by the backend.
+  // An `active` or `expired` claim must NOT reduce the Course Fee.
+  const claim = await StudentModel.getLatestScholarshipClaim(userId);
+  const isLockedIn = claim && claim.status === 'locked_in';
+  const originalCourseFee = Math.max(0, Number(ctx.original_total_fee || ctx.total_fee) || 0);
+  const applicableDiscount = isLockedIn ? (Number(claim.total_discount || ctx.scholarship_amount) || 0) : 0;
+  const totalFee = Math.max(0, originalCourseFee - applicableDiscount);
   const amountPaid = Math.min(totalFee, Math.max(0, Number(ctx.amount_paid) || 0));
   const balance = Math.max(0, Math.round((totalFee - amountPaid) * 100) / 100);
 

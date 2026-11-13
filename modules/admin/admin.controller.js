@@ -131,3 +131,51 @@ export const getPayments = withSafeHandler(
   }
 );
 
+export const getScholarshipTimer = withSafeHandler(
+  async (req, res) => {
+    const data = await AdminService.getScholarshipTimer();
+    return res.status(200).json({
+      success: true,
+      message: 'Scholarship timer setting retrieved successfully',
+      data
+    });
+  },
+  {
+    context: 'admin.settings.getTimer',
+    fallbackMessage: 'Unable to retrieve scholarship timer setting.'
+  }
+);
+
+export const updateScholarshipTimer = withSafeHandler(
+  async (req, res) => {
+    const hours = req.body.hours ?? req.body.scholarship_timer_hours;
+    const data = await AdminService.updateScholarshipTimer(hours);
+    return res.status(200).json({
+      success: true,
+      message: 'Scholarship timer setting updated successfully',
+      data
+    });
+  },
+  {
+    context: 'admin.settings.updateTimer',
+    fallbackMessage: 'Unable to update scholarship timer setting.'
+  }
+);
+
+export const reactivateStudentTimer = withSafeHandler(
+  async (req, res) => {
+    const minutes = req.body?.minutes ?? 10;
+    const data = await AdminService.reactivateStudentTimer(req.params.id, minutes);
+    return res.status(200).json({
+      success: true,
+      message: 'Scholarship timer reactivated successfully',
+      data
+    });
+  },
+  {
+    context: 'admin.students.reactivateTimer',
+    fallbackMessage: 'Unable to reactivate scholarship timer.'
+  }
+);
+
+

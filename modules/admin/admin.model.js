@@ -484,3 +484,62 @@ export const getPaymentsPaginated = async ({
   };
 };
 
+export const getSystemSetting = async (key) => {
+  const rows = await query(
+    'SELECT setting_key, setting_value FROM system_settings WHERE setting_key = ? LIMIT 1',
+    [key]
+  );
+  return rows.length > 0 ? rows[0].setting_value : null;
+};
+
+export const upsertSystemSetting = async (key, value) => {
+  await query(
+    `INSERT INTO system_settings (setting_key, setting_value, created_at, updated_at)
+     VALUES (?, ?, NOW(), NOW())
+     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = NOW()`,
+    [key, String(value)]
+  );
+  return { setting_key: key, setting_value: String(value) };
+};
+
+export const getLatestScholarshipClaimByUserId = async (userId) => {
+  const rows = await query(
+    `SELECT id, user_id, total_discount, status, expires_at, created_at, updated_at,
+            CASE
+              WHEN status = 'active' AND expires_at <= NOW() THEN 'expired'
+              ELSE status
+            END AS effective_status
+     FROM scholarship_claims
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [userId]
+  );
+  return rows.length > 0 ? rows[0] : null;
+};
+
+export const reactivateScholarshipClaim = async (claimId, minutes) => {
+  await query(
+    `UPDATE scholarship_claims
+     SET status = 'active',
+         expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE),
+         updated_at = NOW()
+     WHERE id = ?`,
+    [minutes, claimId]
+  );
+  const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [claimId]);
+  return rows.length > 0 ? rows[0] : null;
+};
+
+export const createScholarshipClaimForUser = async (userId, discount, minutes) => {
+  const res = await query(
+    `INSERT INTO scholarship_claims (user_id, total_discount, status, expires_at, created_at, updated_at)
+     VALUES (?, ?, 'active', DATE_ADD(NOW(), INTERVAL ? MINUTE), NOW(), NOW())`,
+    [userId, discount, minutes]
+  );
+  const insertId = res.insertId;
+  const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [insertId]);
+  return rows.length > 0 ? rows[0] : null;
+};
+
+

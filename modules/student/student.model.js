@@ -184,6 +184,92 @@ export const applyScholarshipToCourseFee = async ({ userId, promoCode, scholarsh
   await query(sql, [promoCode, scholarshipAmount, scholarshipAmount, scholarshipAmount, userId]);
 };
 
+export const getSystemSetting = async (key) => {
+  const rows = await query(
+    'SELECT setting_key, setting_value FROM system_settings WHERE setting_key = ? LIMIT 1',
+    [key]
+  );
+  return rows.length > 0 ? rows[0].setting_value : null;
+};
+
+export const createOrUpdateScholarshipClaim = async ({ userId, totalDiscount, hours = 2, isRegFeePaid = false }) => {
+  const existingRows = await query(
+    'SELECT id, status, expires_at, total_discount FROM scholarship_claims WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+    [userId]
+  );
+
+  // If already locked in, preserve locked_in status
+  if (existingRows.length > 0 && existingRows[0].status === 'locked_in') {
+    return existingRows[0];
+  }
+
+  // If student has already paid the Registration Fee, claim is directly locked in (no timer required)
+  if (isRegFeePaid) {
+    const res = await query(
+      `INSERT INTO scholarship_claims (user_id, total_discount, status, expires_at, created_at, updated_at)
+       VALUES (?, ?, 'locked_in', DATE_ADD(NOW(), INTERVAL ? HOUR), NOW(), NOW())`,
+      [userId, totalDiscount, hours]
+    );
+    const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [res.insertId]);
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  // If existing active claim has not expired, do NOT restart timer
+  if (existingRows.length > 0 && existingRows[0].status === 'active') {
+    const exp = new Date(existingRows[0].expires_at).getTime();
+    if (exp > Date.now()) {
+      return existingRows[0];
+    }
+  }
+
+  const res = await query(
+    `INSERT INTO scholarship_claims (user_id, total_discount, status, expires_at, created_at, updated_at)
+     VALUES (?, ?, 'active', DATE_ADD(NOW(), INTERVAL ? HOUR), NOW(), NOW())`,
+    [userId, totalDiscount, hours]
+  );
+
+  const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [res.insertId]);
+  return rows.length > 0 ? rows[0] : null;
+};
+
+export const hasSuccessfulRegistrationPayment = async (userId) => {
+  const rows = await query(
+    `SELECT 1 FROM registration_payments 
+     WHERE user_id = ? AND payment_status = 'successful' 
+     LIMIT 1`,
+    [userId]
+  );
+  if (rows.length > 0) return true;
+
+  const userRows = await query(
+    'SELECT registration_fee_paid FROM users WHERE id = ? LIMIT 1',
+    [userId]
+  );
+  return Boolean(userRows[0]?.registration_fee_paid);
+};
+
+export const getLatestScholarshipClaim = async (userId) => {
+  const rows = await query(
+    `SELECT id, user_id, total_discount, status, expires_at, created_at, updated_at,
+            CASE
+              WHEN status = 'active' AND expires_at <= NOW() THEN 'expired'
+              ELSE status
+            END AS effective_status
+     FROM scholarship_claims
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [userId]
+  );
+  if (rows.length === 0) return null;
+  const claim = rows[0];
+  if (claim.status === 'active' && new Date(claim.expires_at) <= new Date()) {
+    await query("UPDATE scholarship_claims SET status = 'expired', updated_at = NOW() WHERE id = ?", [claim.id]);
+    claim.status = 'expired';
+  }
+  return claim;
+};
+
 export const getRegistrationFeeDetails = async (userId) => {
   const sql = `
     SELECT 
@@ -434,11 +520,35 @@ export const completeRegistrationPayment = async ({
       [order.user_id]
     );
 
-    // 4. Update users is_active = 1 (Account Activated!)
+    // 4. Update users is_active = 1 and registration_fee_paid = 1
     await connection.execute(
-      "UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?",
+      "UPDATE users SET is_active = 1, registration_fee_paid = 1, updated_at = NOW() WHERE id = ?",
       [order.user_id]
     );
+
+    // 5. Evaluate and update scholarship_claims status
+    const [claims] = await connection.execute(
+      "SELECT id, expires_at FROM scholarship_claims WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+      [order.user_id]
+    );
+
+    if (claims.length > 0) {
+      const activeClaim = claims[0];
+      const now = new Date();
+      const expiresAt = new Date(activeClaim.expires_at);
+
+      if (expiresAt > now) {
+        await connection.execute(
+          "UPDATE scholarship_claims SET status = 'locked_in', updated_at = NOW() WHERE id = ?",
+          [activeClaim.id]
+        );
+      } else {
+        await connection.execute(
+          "UPDATE scholarship_claims SET status = 'expired', updated_at = NOW() WHERE id = ?",
+          [activeClaim.id]
+        );
+      }
+    }
 
     await connection.commit();
 
@@ -618,6 +728,7 @@ export const getCourseFeePaymentContext = async (userId) => {
       u.email,
       u.is_active,
       u.is_verified,
+      COALESCE(u.registration_fee_paid, 0) AS registration_fee_paid,
       sp.id AS student_profile_id,
       sp.student_id,
       sp.application_no,
@@ -631,6 +742,8 @@ export const getCourseFeePaymentContext = async (userId) => {
       e.specialization_id,
       e.enrollment_status,
       e.total_fee,
+      e.original_total_fee,
+      e.scholarship_amount,
       e.amount_paid,
       e.outstanding_balance,
       c.name AS course_name,

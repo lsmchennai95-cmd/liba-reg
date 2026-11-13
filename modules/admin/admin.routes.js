@@ -32,11 +32,16 @@ router.get(
 );
 router.get('/students/:id', AdminController.getStudentById);
 router.get('/students/:id/payments', AdminController.getStudentPayments);
+router.post('/students/:id/reactivate-timer', AdminController.reactivateStudentTimer);
 router.get(
   '/payments',
   validateQuery(listPaymentsQuerySchema),
   AdminController.getPayments
 );
+
+// Scholarship Timer Configuration
+router.get('/settings/timer', AdminController.getScholarshipTimer);
+router.put('/settings/timer', AdminController.updateScholarshipTimer);
 
 export { router as adminRoutes };
 

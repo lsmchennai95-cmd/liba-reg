@@ -163,9 +163,9 @@ export const markOtpUsed = async (otpId) => {
 };
 
 export const markUserVerified = async (userId) => {
-  await query('UPDATE users SET is_verified = 1 WHERE id = ?', [userId]);
+  await query('UPDATE users SET is_verified = 1, is_active = 1, updated_at = NOW() WHERE id = ?', [userId]);
   await query(
-    "UPDATE student_profiles SET application_status = 'email_verified' WHERE user_id = ? AND application_status = 'pending_verification'",
+    "UPDATE student_profiles SET application_status = 'email_verified', updated_at = NOW() WHERE user_id = ? AND application_status = 'pending_verification'",
     [userId]
   );
   return true;

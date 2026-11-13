@@ -15,6 +15,7 @@ CREATE TABLE `users` (
   `role` ENUM('student', 'admin') NOT NULL DEFAULT 'student',
   `is_active` TINYINT(1) NOT NULL DEFAULT 0,
   `is_verified` TINYINT(1) NOT NULL DEFAULT 0,
+  `registration_fee_paid` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -285,11 +286,42 @@ CREATE TABLE `registration_notification_outbox` (
     REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 12. SYSTEM SETTINGS TABLE
+DROP TABLE IF EXISTS `system_settings`;
+CREATE TABLE `system_settings` (
+  `setting_key` VARCHAR(50) NOT NULL,
+  `setting_value` VARCHAR(255) NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 13. SCHOLARSHIP CLAIMS TABLE
+DROP TABLE IF EXISTS `scholarship_claims`;
+CREATE TABLE `scholarship_claims` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT UNSIGNED NOT NULL,
+  `total_discount` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  `status` ENUM('active', 'expired', 'locked_in', 'used') NOT NULL DEFAULT 'active',
+  `expires_at` DATETIME NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_scholarship_claims_user_status` (`user_id`, `status`),
+  KEY `idx_scholarship_claims_expires` (`expires_at`),
+  CONSTRAINT `fk_scholarship_claims_user` FOREIGN KEY (`user_id`)
+    REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =====================================================================
 -- INITIAL SEED DATA
 -- =====================================================================
+
+INSERT INTO `system_settings` (`setting_key`, `setting_value`) VALUES
+('scholarship_timer_hours', '2')
+ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`);
 
 INSERT INTO `courses` (`id`, `code`, `name`, `description`, `is_active`) VALUES
 (1, 'PGDM', 'PGDM (Online) AICTE Approved', 'Post Graduate Diploma in Management - 2-year premier online programme approved by AICTE.', 1),
