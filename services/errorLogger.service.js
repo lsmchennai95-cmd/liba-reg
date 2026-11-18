@@ -298,11 +298,16 @@ export const sendSafeErrorResponse = (err, req, res, options = {}) => {
     return;
   }
 
-  return res.status(classified.statusCode).json({
+  const responsePayload = {
     success: false,
     message: classified.publicMessage,
     errors: classified.errors
-  });
+  };
+  if (classified.code) {
+    responsePayload.code = classified.code;
+  }
+
+  return res.status(classified.statusCode).json(responsePayload);
 };
 
 /**

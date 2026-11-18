@@ -145,7 +145,8 @@ export const env = {
     smtpSecure: process.env.SMTP_SECURE === 'true',
     smtpUser: process.env.SMTP_USER || '',
     smtpPass: process.env.SMTP_PASS || '',
-    fromEmail: process.env.EMAIL_FROM || 'noreply@libaonline.com'
+    fromEmail: process.env.EMAIL_FROM || 'noreply@libaonline.com',
+    logoUrl: (process.env.LIBA_EMAIL_LOGO_URL || '').trim()
   },
 
   ccavenue: {

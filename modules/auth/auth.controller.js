@@ -142,6 +142,19 @@ export const getCourses = async (req, res, next) => {
   }
 };
 
+export const getCourseSpecializations = async (req, res, next) => {
+  try {
+    const specializations = await AuthService.getActiveSpecializationsForCourse(req.params.courseId);
+    return res.status(200).json({
+      success: true,
+      message: 'Active specializations retrieved successfully',
+      data: { specializations }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;

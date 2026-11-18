@@ -47,11 +47,12 @@ export const getStudentFeeAndPaymentSummary = async (userId) => {
       e.outstanding_balance,
       e.scholarship_code,
       COALESCE(e.scholarship_amount, 0.00) AS scholarship_amount,
-      COALESCE(e.original_total_fee, cf.total_fee, e.total_fee) AS original_total_fee,
-      COALESCE(cf.total_fee, 350000.00) AS course_total_fee,
-      COALESCE(cf.registration_fee, 3100.00) AS registration_fee,
-      COALESCE(cf.admission_fee, 50000.00) AS admission_fee,
-      COALESCE(cf.tuition_fee, 275000.00) AS tuition_fee,
+      e.original_total_fee AS original_total_fee,
+      COALESCE(e.original_total_fee, e.total_fee) AS course_total_fee,
+      e.registration_fee AS registration_fee,
+      CASE WHEN e.original_total_fee IS NULL OR e.registration_fee IS NULL THEN 1 ELSE 0 END AS fee_snapshot_missing,
+      cf.admission_fee,
+      cf.tuition_fee,
       COALESCE(rp.final_reg_fee, 0.00) AS registration_fee_paid,
       rp.payment_status AS registration_payment_status,
       rp.payment_gateway AS registration_payment_gateway,
@@ -173,15 +174,125 @@ export const applyScholarshipToCourseFee = async ({ userId, promoCode, scholarsh
     UPDATE enrollments e
     LEFT JOIN course_fees cf ON cf.course_id = e.course_id
     SET 
-      e.original_total_fee = COALESCE(e.original_total_fee, cf.total_fee, e.total_fee),
+      e.original_total_fee = COALESCE(e.original_total_fee, e.total_fee, cf.total_fee),
       e.scholarship_code = ?,
       e.scholarship_amount = ?,
-      e.total_fee = GREATEST(0, COALESCE(e.original_total_fee, cf.total_fee, e.total_fee) - ?),
-      e.outstanding_balance = GREATEST(0, GREATEST(0, COALESCE(e.original_total_fee, cf.total_fee, e.total_fee) - ?) - e.amount_paid),
+      e.total_fee = GREATEST(0, COALESCE(e.original_total_fee, e.total_fee, cf.total_fee) - ?),
+      e.outstanding_balance = GREATEST(0, GREATEST(0, COALESCE(e.original_total_fee, e.total_fee, cf.total_fee) - ?) - e.amount_paid),
       e.updated_at = NOW()
     WHERE e.user_id = ?
   `;
   await query(sql, [promoCode, scholarshipAmount, scholarshipAmount, scholarshipAmount, userId]);
+};
+
+export const getSystemSetting = async (key) => {
+  const rows = await query(
+    'SELECT setting_key, setting_value FROM system_settings WHERE setting_key = ? LIMIT 1',
+    [key]
+  );
+  return rows.length > 0 ? rows[0].setting_value : null;
+};
+
+export const createOrUpdateScholarshipClaim = async ({
+  userId,
+  courseId = null,
+  totalDiscount,
+  hours = 2,
+  isRegFeePaid = false,
+  maxScholarship = null,
+  calculationSnapshot = null
+}) => {
+  const existingRows = await query(
+    'SELECT id, user_id, course_id, status, expires_at, total_discount, max_scholarship, calculation_snapshot FROM scholarship_claims WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+    [userId]
+  );
+
+  if (existingRows.length > 0) {
+    const existing = existingRows[0];
+    const isPastDeadline = existing.expires_at ? new Date(existing.expires_at).getTime() <= Date.now() : false;
+
+    // If already locked in or used, preserve status and discount
+    if (existing.status === 'locked_in' || existing.status === 'used') {
+      return existing;
+    }
+
+    // If claim is expired or active with deadline passed, reject duplicate claim creation
+    if (existing.status === 'expired' || (existing.status === 'active' && isPastDeadline)) {
+      if (existing.status === 'active') {
+        await query("UPDATE scholarship_claims SET status = 'expired', updated_at = NOW() WHERE id = ?", [existing.id]);
+        existing.status = 'expired';
+      }
+      const error = new Error('Cannot create or update scholarship claim: reservation period has expired.');
+      error.statusCode = 409;
+      error.code = 'SCHOLARSHIP_CLAIM_EXPIRED';
+      throw error;
+    }
+
+    // If existing active claim has not expired, do NOT restart timer or create duplicate
+    if (existing.status === 'active') {
+      return existing;
+    }
+  }
+
+  const snapshotJson = calculationSnapshot ? JSON.stringify(calculationSnapshot) : null;
+
+  // If student has already paid the Registration Fee, claim is directly locked in (no timer required)
+  if (isRegFeePaid) {
+    const res = await query(
+      `INSERT INTO scholarship_claims (user_id, course_id, max_scholarship, total_discount, calculation_snapshot, status, expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'locked_in', DATE_ADD(NOW(), INTERVAL ? HOUR), NOW(), NOW())`,
+      [userId, courseId, maxScholarship, totalDiscount, snapshotJson, hours]
+    );
+    const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [res.insertId]);
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  const res = await query(
+    `INSERT INTO scholarship_claims (user_id, course_id, max_scholarship, total_discount, calculation_snapshot, status, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'active', DATE_ADD(NOW(), INTERVAL ? HOUR), NOW(), NOW())`,
+    [userId, courseId, maxScholarship, totalDiscount, snapshotJson, hours]
+  );
+
+  const rows = await query('SELECT * FROM scholarship_claims WHERE id = ?', [res.insertId]);
+  return rows.length > 0 ? rows[0] : null;
+};
+
+export const hasSuccessfulRegistrationPayment = async (userId) => {
+  const rows = await query(
+    `SELECT 1 FROM registration_payments 
+     WHERE user_id = ? AND payment_status = 'successful' 
+     LIMIT 1`,
+    [userId]
+  );
+  if (rows.length > 0) return true;
+
+  const userRows = await query(
+    'SELECT registration_fee_paid FROM users WHERE id = ? LIMIT 1',
+    [userId]
+  );
+  return Boolean(userRows[0]?.registration_fee_paid);
+};
+
+export const getLatestScholarshipClaim = async (userId) => {
+  const rows = await query(
+    `SELECT id, user_id, course_id, max_scholarship, total_discount, calculation_snapshot, status, expires_at, created_at, updated_at,
+            CASE
+              WHEN status = 'active' AND expires_at <= NOW() THEN 'expired'
+              ELSE status
+            END AS effective_status
+     FROM scholarship_claims
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [userId]
+  );
+  if (rows.length === 0) return null;
+  const claim = rows[0];
+  if (claim.status === 'active' && new Date(claim.expires_at) <= new Date()) {
+    await query("UPDATE scholarship_claims SET status = 'expired', updated_at = NOW() WHERE id = ?", [claim.id]);
+    claim.status = 'expired';
+  }
+  return claim;
 };
 
 export const getRegistrationFeeDetails = async (userId) => {
@@ -205,8 +316,9 @@ export const getRegistrationFeeDetails = async (userId) => {
       c.name AS course_name,
       s.id AS specialization_id,
       s.name AS specialization_name,
-      COALESCE(cf.total_fee, 350000.00) AS course_total_fee,
-      COALESCE(cf.registration_fee, 3100.00) AS original_registration_fee,
+      e.original_total_fee AS course_total_fee,
+      e.registration_fee AS original_registration_fee,
+      CASE WHEN e.original_total_fee IS NULL OR e.registration_fee IS NULL THEN 1 ELSE 0 END AS fee_snapshot_missing,
       sa.promo_code,
       COALESCE(sa.scholarship_amount, 0.00) AS scholarship_amount,
       sa.scholarship_status,
@@ -373,6 +485,7 @@ export const completeRegistrationPayment = async ({
   trackingId,
   bankRefNo,
   paymentMode,
+  actualPaymentDate = null,
   rawResponse
 }) => {
   const connection = await getConnection();
@@ -403,11 +516,29 @@ export const completeRegistrationPayment = async ({
     const rawResponseStr = rawResponse ? JSON.stringify(rawResponse) : null;
     const resolvedTxnId = transactionId || trackingId || bankRefNo || orderId;
 
+    // Verify duplicate transaction reference across other registration payment records
+    if (resolvedTxnId && resolvedTxnId !== orderId) {
+      const [duplicateTxn] = await connection.execute(
+        `SELECT id, user_id FROM registration_payments 
+         WHERE (transaction_id = ? OR (tracking_id = ? AND tracking_id IS NOT NULL))
+           AND payment_status = 'successful' AND id != ?
+         LIMIT 1`,
+        [resolvedTxnId, trackingId || resolvedTxnId, order.id]
+      );
+      if (duplicateTxn.length > 0) {
+        const err = new Error(`Transaction reference '${resolvedTxnId}' has already been processed for another payment.`);
+        err.statusCode = 409;
+        err.code = 'DUPLICATE_TRANSACTION_REFERENCE';
+        throw err;
+      }
+    }
+
     // 2. Update registration_payments to successful
     await connection.execute(
       `UPDATE registration_payments 
        SET payment_status = 'successful',
            paid_at = NOW(),
+           actual_payment_date = COALESCE(?, NOW()),
            transaction_id = ?,
            tracking_id = COALESCE(?, tracking_id),
            bank_ref_no = COALESCE(?, bank_ref_no),
@@ -418,6 +549,7 @@ export const completeRegistrationPayment = async ({
            updated_at = NOW()
        WHERE order_id = ?`,
       [
+        actualPaymentDate || null,
         resolvedTxnId,
         trackingId || null,
         bankRefNo || null,
@@ -434,11 +566,32 @@ export const completeRegistrationPayment = async ({
       [order.user_id]
     );
 
-    // 4. Update users is_active = 1 (Account Activated!)
+    // 4. Update users is_active = 1 and registration_fee_paid = 1
     await connection.execute(
-      "UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?",
+      "UPDATE users SET is_active = 1, registration_fee_paid = 1, updated_at = NOW() WHERE id = ?",
       [order.user_id]
     );
+
+    // 5. Evaluate and update scholarship_claims status
+    const [claims] = await connection.execute(
+      "SELECT id, expires_at FROM scholarship_claims WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+      [order.user_id]
+    );
+
+    if (claims.length > 0) {
+      const activeClaim = claims[0];
+      const [evalRows] = await connection.execute(
+        `SELECT CASE WHEN COALESCE(?, NOW()) <= expires_at THEN 'locked_in' ELSE 'expired' END AS target_status
+         FROM scholarship_claims WHERE id = ?`,
+        [actualPaymentDate || null, activeClaim.id]
+      );
+      const targetStatus = evalRows[0]?.target_status || 'expired';
+
+      await connection.execute(
+        "UPDATE scholarship_claims SET status = ?, updated_at = NOW() WHERE id = ?",
+        [targetStatus, activeClaim.id]
+      );
+    }
 
     await connection.commit();
 
@@ -618,6 +771,7 @@ export const getCourseFeePaymentContext = async (userId) => {
       u.email,
       u.is_active,
       u.is_verified,
+      COALESCE(u.registration_fee_paid, 0) AS registration_fee_paid,
       sp.id AS student_profile_id,
       sp.student_id,
       sp.application_no,
@@ -631,6 +785,9 @@ export const getCourseFeePaymentContext = async (userId) => {
       e.specialization_id,
       e.enrollment_status,
       e.total_fee,
+      e.original_total_fee AS original_total_fee,
+      CASE WHEN e.original_total_fee IS NULL THEN 1 ELSE 0 END AS fee_snapshot_missing,
+      e.scholarship_amount,
       e.amount_paid,
       e.outstanding_balance,
       c.name AS course_name,
@@ -639,6 +796,7 @@ export const getCourseFeePaymentContext = async (userId) => {
     INNER JOIN student_profiles sp ON sp.user_id = u.id
     INNER JOIN enrollments e ON e.user_id = u.id
     LEFT JOIN courses c ON c.id = e.course_id
+    LEFT JOIN course_fees cf ON cf.course_id = e.course_id
     LEFT JOIN specializations s ON s.id = e.specialization_id
     WHERE u.id = ?
     LIMIT 1
@@ -769,6 +927,23 @@ export const completeCoursePayment = async ({
 
     const rawResponseStr = rawResponse ? JSON.stringify(rawResponse) : null;
     const resolvedTxnId = transactionId || trackingId || bankRefNo || orderId;
+
+    // Verify duplicate transaction reference across other course payment records
+    if (resolvedTxnId && resolvedTxnId !== orderId) {
+      const [duplicateTxn] = await connection.execute(
+        `SELECT id, user_id FROM payments 
+         WHERE (transaction_id = ? OR (tracking_id = ? AND tracking_id IS NOT NULL))
+           AND payment_status = 'successful' AND id != ?
+         LIMIT 1`,
+        [resolvedTxnId, trackingId || resolvedTxnId, order.id]
+      );
+      if (duplicateTxn.length > 0) {
+        const err = new Error(`Transaction reference '${resolvedTxnId}' has already been processed for another payment.`);
+        err.statusCode = 409;
+        err.code = 'DUPLICATE_TRANSACTION_REFERENCE';
+        throw err;
+      }
+    }
 
     await connection.execute(
       `UPDATE payments
@@ -909,4 +1084,36 @@ export const updateNonSuccessCoursePayment = async ({
   } finally {
     connection.release();
   }
+};
+
+export const getCourseScholarshipDistributions = async (courseId) => {
+  const sql = `
+    SELECT id, course_id, category, amount, is_active, eligibility_config, created_at, updated_at
+    FROM course_scholarship_distributions
+    WHERE course_id = ?
+    ORDER BY id ASC
+  `;
+  return query(sql, [courseId]);
+};
+
+export const getCourseById = async (courseId) => {
+  const sql = `
+    SELECT id, code, name, description, course_type, scholarship_amount, is_scholarship_active, is_active
+    FROM courses
+    WHERE id = ?
+    LIMIT 1
+  `;
+  const rows = await query(sql, [courseId]);
+  return rows[0] || null;
+};
+
+export const getCourseByCodeOrName = async (codeOrName) => {
+  const sql = `
+    SELECT id, code, name, description, course_type, scholarship_amount, is_scholarship_active, is_active
+    FROM courses
+    WHERE code = ? OR name = ?
+    LIMIT 1
+  `;
+  const rows = await query(sql, [codeOrName, codeOrName]);
+  return rows[0] || null;
 };

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { env } from '../config/env.js';
+import { env } from '../src/config/env.js';
 import { createSafeError, SAFE_MESSAGES } from './errorLogger.service.js';
 
 const createGatewayConfigError = (

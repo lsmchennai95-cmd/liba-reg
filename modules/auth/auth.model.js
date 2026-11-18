@@ -57,6 +57,70 @@ export const validateCourseAndSpecialization = async (courseId, specializationId
   return rows[0] || null;
 };
 
+export const verifyCourseAndSpecializationForRegistration = async (courseId, specializationId, connection = null) => {
+  const cId = Number(courseId);
+  const sId = Number(specializationId);
+
+  // 1. Verify Course exists
+  const courseSql = connection ? 'SELECT id, name, code, is_active FROM courses WHERE id = ? FOR UPDATE' : 'SELECT id, name, code, is_active FROM courses WHERE id = ?';
+  const courseRows = connection ? (await connection.execute(courseSql, [cId]))[0] : await query(courseSql, [cId]);
+  const course = courseRows[0];
+  if (!course) {
+    const error = new Error('Selected course does not exist');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // 2. Verify Course is active
+  if (!course.is_active) {
+    const error = new Error(`Course '${course.name}' is currently inactive and not accepting registrations`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // 3. Verify Specialisation exists
+  const specSql = connection ? 'SELECT id, course_id, name, code, is_active FROM specializations WHERE id = ? FOR UPDATE' : 'SELECT id, course_id, name, code, is_active FROM specializations WHERE id = ?';
+  const specRows = connection ? (await connection.execute(specSql, [sId]))[0] : await query(specSql, [sId]);
+  const spec = specRows[0];
+  if (!spec) {
+    const error = new Error('Selected specialisation does not exist');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // 4. Verify Specialisation belongs to selected course
+  if (spec.course_id !== cId) {
+    const error = new Error(`Selected specialisation '${spec.name}' does not belong to course '${course.name}'`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // 5. Verify Specialisation is active
+  if (!spec.is_active) {
+    const error = new Error(`Specialisation '${spec.name}' is currently inactive and not accepting registrations`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    course_id: course.id,
+    course_name: course.name,
+    specialization_id: spec.id,
+    specialization_name: spec.name
+  };
+};
+
+export const getActiveSpecializationsByCourseId = async (courseId) => {
+  const sql = `
+    SELECT s.id, s.course_id, s.code, s.name, s.is_active
+    FROM specializations s
+    INNER JOIN courses c ON c.id = s.course_id
+    WHERE s.course_id = ? AND s.is_active = 1 AND c.is_active = 1
+    ORDER BY s.id ASC
+  `;
+  return query(sql, [courseId]);
+};
+
 export const getCourseFeeByCourseId = async (courseId) => {
   const rows = await query('SELECT * FROM course_fees WHERE course_id = ? LIMIT 1', [courseId]);
   return rows[0] || null;
@@ -66,6 +130,13 @@ export const registerStudentTransaction = async ({ userData, profileData, enroll
   const connection = await getConnection();
   try {
     await connection.beginTransaction();
+
+    // 0. Verify course & specialisation are valid and active within the transaction
+    await verifyCourseAndSpecializationForRegistration(
+      enrollmentData.courseId,
+      enrollmentData.specializationId,
+      connection
+    );
 
     // 1. Insert into users with is_active = 0, is_verified = 0
     const [userResult] = await connection.execute(
@@ -95,14 +166,16 @@ export const registerStudentTransaction = async ({ userData, profileData, enroll
     // 3. Insert into enrollments
     await connection.execute(
       `INSERT INTO enrollments 
-        (user_id, student_profile_id, course_id, specialization_id, enrollment_status, total_fee, amount_paid, outstanding_balance)
-       VALUES (?, ?, ?, ?, 'pending', ?, 0.00, ?)`,
+        (user_id, student_profile_id, course_id, specialization_id, enrollment_status, total_fee, original_total_fee, registration_fee, amount_paid, outstanding_balance)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, 0.00, ?)`,
       [
         userId,
         profileId,
         enrollmentData.courseId,
         enrollmentData.specializationId,
         enrollmentData.totalFee,
+        enrollmentData.totalFee,
+        enrollmentData.registrationFee != null ? enrollmentData.registrationFee : 0.00,
         enrollmentData.totalFee
       ]
     );
@@ -163,9 +236,9 @@ export const markOtpUsed = async (otpId) => {
 };
 
 export const markUserVerified = async (userId) => {
-  await query('UPDATE users SET is_verified = 1 WHERE id = ?', [userId]);
+  await query('UPDATE users SET is_verified = 1, is_active = 1, updated_at = NOW() WHERE id = ?', [userId]);
   await query(
-    "UPDATE student_profiles SET application_status = 'email_verified' WHERE user_id = ? AND application_status = 'pending_verification'",
+    "UPDATE student_profiles SET application_status = 'email_verified', updated_at = NOW() WHERE user_id = ? AND application_status = 'pending_verification'",
     [userId]
   );
   return true;
@@ -189,11 +262,38 @@ export const updateUserPassword = async (userId, passwordHash) => {
 };
 
 export const getAllActiveCoursesWithSpecializations = async () => {
-  const courses = await query('SELECT id, code, name, description FROM courses WHERE is_active = 1 ORDER BY id ASC');
+  const sql = `
+    SELECT 
+      c.id, 
+      c.code, 
+      c.name, 
+      c.description, 
+      c.course_type,
+      c.scholarship_amount,
+      c.is_scholarship_active,
+      COALESCE(cf.total_fee, 0.00) AS total_fee,
+      COALESCE(cf.registration_fee, 0.00) AS registration_fee,
+      COALESCE(cf.tuition_fee, 0.00) AS tuition_fee
+    FROM courses c
+    LEFT JOIN course_fees cf ON cf.course_id = c.id
+    WHERE c.is_active = 1 
+    ORDER BY c.id ASC
+  `;
+  const courses = await query(sql);
   const specializations = await query('SELECT id, course_id, code, name FROM specializations WHERE is_active = 1 ORDER BY course_id ASC, id ASC');
 
   return courses.map((course) => ({
     ...course,
+    total_fee: parseFloat(course.total_fee || 0),
+    registration_fee: parseFloat(course.registration_fee || 0),
+    tuition_fee: parseFloat(course.tuition_fee || 0),
+    scholarship_amount: parseFloat(course.scholarship_amount || 0),
+    is_scholarship_active: Boolean(course.is_scholarship_active),
     specializations: specializations.filter((s) => s.course_id === course.id)
   }));
+};
+
+export const findCourseById = async (courseId) => {
+  const rows = await query('SELECT id, name, code, is_active FROM courses WHERE id = ?', [courseId]);
+  return rows[0] || null;
 };

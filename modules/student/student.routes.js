@@ -10,14 +10,14 @@ const paymentRouter = Router();
 // Student Profile (Pre & Post Activation)
 router.get('/profile', authenticate, requireStudent, StudentController.getProfile);
 
-// Post-Activation Protected Routes (Requires is_active = 1)
-router.get('/dashboard', authenticate, requireActiveStudent, StudentController.getDashboard);
-router.get('/payments', authenticate, requireActiveStudent, StudentController.getPayments);
+// Student Dashboard & Payment History
+router.get('/dashboard', authenticate, requireStudent, StudentController.getDashboard);
+router.get('/payments', authenticate, requireStudent, StudentController.getPayments);
 
-// Scholarship and Academics Routes (Requires is_active = 1, accessed after account activation)
-router.post('/scholarship/validate', authenticate, requireActiveStudent, StudentController.validateScholarshipCode);
-router.post('/scholarship', authenticate, requireActiveStudent, StudentController.submitAcademicAndScholarship);
-router.get('/scholarship', authenticate, requireActiveStudent, StudentController.getAcademicAndScholarship);
+// Scholarship and Academics Routes
+router.post('/scholarship/validate', authenticate, requireStudent, StudentController.validateScholarshipCode);
+router.post('/scholarship', authenticate, requireStudent, StudentController.submitAcademicAndScholarship);
+router.get('/scholarship', authenticate, requireStudent, StudentController.getAcademicAndScholarship);
 
 // Registration Fee & CCAvenue Payment Routes
 router.get('/registration-fee', authenticate, requireStudent, StudentController.getRegistrationFee);
