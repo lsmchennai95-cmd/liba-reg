@@ -2,7 +2,6 @@ import { env } from '../config/env.js';
 import {
   escapeHtml,
   formatINR,
-  getLogoAttachments,
   renderEmailTemplate,
   sendMail
 } from './send-mail.js';
@@ -26,7 +25,6 @@ export const sendPaymentFailedEmail = async ({
   const retryUrl = `${env.frontendUrl}/student/payment/`;
   const subject = `LIBA Online – Payment Attempt Unsuccessful [${applicationNumber !== 'N/A' ? applicationNumber : orderId}]`;
 
-  const attachments = getLogoAttachments('liba-logo.png');
   const html = renderEmailTemplate(
     'payment-failed-template.html',
     {
@@ -38,8 +36,7 @@ export const sendPaymentFailedEmail = async ({
       orderId: escapeHtml(orderId),
       reason: escapeHtml(reason),
       retryUrl: escapeHtml(retryUrl)
-    },
-    { hasLogo: attachments.length > 0 }
+    }
   );
 
   if (env.nodeEnv !== 'production') {
@@ -50,8 +47,7 @@ export const sendPaymentFailedEmail = async ({
     to,
     subject,
     text: `Dear ${name || 'Student'}, your payment attempt of ${formattedAmount} for LIBA Online Registration could not be completed (${reason}). You can retry your payment at: ${retryUrl}`,
-    html,
-    attachments
+    html
   });
 
   return true;

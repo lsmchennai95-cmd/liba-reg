@@ -30,16 +30,11 @@ const signAuthToken = (user) => {
 };
 
 export const registerStudent = async (data) => {
-  // 1. Validate course & specialization belong together using real DB records
-  const validCombo = await AuthModel.validateCourseAndSpecialization(
+  // 1. Validate course & specialization are active and belong together using real DB records
+  const validCombo = await AuthModel.verifyCourseAndSpecializationForRegistration(
     data.courseId,
     data.specializationId
   );
-  if (!validCombo) {
-    const error = new Error('Selected specialization does not belong to the selected course');
-    error.statusCode = 400;
-    throw error;
-  }
 
   // 2. Check duplicate email
   const existingUser = await AuthModel.findUserByEmail(data.email);
@@ -64,9 +59,12 @@ export const registerStudent = async (data) => {
   const studentId = generateStudentId();
   const applicationNo = generateApplicationNo();
 
-  // 6. Retrieve course fee from database
+  // 6. Retrieve course fee and registration fee snapshot from database
   const feeRecord = await AuthModel.getCourseFeeByCourseId(data.courseId);
-  const totalFee = feeRecord ? parseFloat(feeRecord.total_fee) : 350000.00;
+  const totalFee = feeRecord && feeRecord.total_fee !== null ? parseFloat(feeRecord.total_fee) : 0.00;
+  const registrationFee = (feeRecord && feeRecord.registration_fee !== undefined && feeRecord.registration_fee !== null)
+    ? parseFloat(feeRecord.registration_fee)
+    : 0.00;
 
   // 7. Persist user, profile, and enrollment in transaction (with is_verified = 0)
   const { userId } = await AuthModel.registerStudentTransaction({
@@ -86,7 +84,8 @@ export const registerStudent = async (data) => {
     enrollmentData: {
       courseId: data.courseId,
       specializationId: data.specializationId,
-      totalFee
+      totalFee,
+      registrationFee
     }
   });
 
@@ -232,7 +231,7 @@ export const verifyOtp = async (verificationToken, otp) => {
     };
   }
 
-  // For registration: mark user as verified (account remains inactive until registration payment)
+  // For registration: mark user as verified and account activated immediately
   await AuthModel.markUserVerified(userId);
 
   const student = await AuthModel.findUserById(userId);
@@ -243,14 +242,15 @@ export const verifyOtp = async (verificationToken, otp) => {
     email: decoded.email,
     flow: 'registration',
     token,
-    isActive: false,
-    nextStep: 'payment',
-    redirectUrl: '../payment/',
+    isActive: true,
+    nextStep: 'dashboard',
+    redirectUrl: '../dashboard/',
     user: {
       userId: student.user_id,
       email: student.email,
       role: student.role,
-      isActive: false,
+      isActive: true,
+      isVerified: true,
       applicationStatus: student.application_status || 'email_verified',
       studentId: student.student_id,
       applicationNo: student.application_no,
@@ -496,30 +496,17 @@ export const loginStudent = async (email, password) => {
     };
   }
 
-  // 5. Retrieve full student profile
+  // 5. If user verified, ensure account is active (immediate activation flow)
+  if (!user.is_active && user.is_verified) {
+    await AuthModel.activateUser(user.id);
+    user.is_active = 1;
+  }
+
+  // 6. Retrieve full student profile
   const profile = await AuthModel.findUserById(user.id);
   const token = signAuthToken(user);
 
-  // 6. Check account activation: If inactive, student must pay registration fee to activate account
-  if (!user.is_active) {
-    const nextStep = 'payment';
-    const redirectUrl = '../payment/';
-    const message = 'Please complete your registration fee payment to activate your account.';
-
-    return {
-      success: true,
-      requiresAction: true,
-      isActive: false,
-      isVerified: true,
-      nextStep,
-      redirectUrl,
-      message,
-      token,
-      user: profile
-    };
-  }
-
-  // 7. Active account: Proceed to dashboard
+  // 7. Active account: Proceed directly to dashboard
   return {
     success: true,
     isActive: true,
@@ -543,4 +530,25 @@ export const getCurrentUser = async (userId) => {
 
 export const getCoursesAndSpecializations = async () => {
   return AuthModel.getAllActiveCoursesWithSpecializations();
+};
+
+export const getActiveSpecializationsForCourse = async (courseId) => {
+  const id = Number(courseId);
+  if (!id || id <= 0) {
+    const err = new Error('Invalid course ID');
+    err.statusCode = 400;
+    throw err;
+  }
+  const course = await AuthModel.findCourseById(id);
+  if (!course) {
+    const err = new Error('Course not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!course.is_active) {
+    const err = new Error(`Course '${course.name}' is currently inactive`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return AuthModel.getActiveSpecializationsByCourseId(id);
 };

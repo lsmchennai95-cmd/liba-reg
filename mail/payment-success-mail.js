@@ -2,7 +2,6 @@ import { env } from '../config/env.js';
 import {
   escapeHtml,
   formatINR,
-  getLogoAttachments,
   renderEmailTemplate,
   sendMail
 } from './send-mail.js';
@@ -35,7 +34,6 @@ export const sendPaymentSuccessEmail = async ({
   const dashboardUrl = `${env.frontendUrl}/student/dashboard/`;
   const subject = `LIBA Online – Payment Successful & Account Activated [${applicationNumber !== 'N/A' ? applicationNumber : orderId}]`;
 
-  const attachments = getLogoAttachments('liba-logo.png');
   const html = renderEmailTemplate(
     'payment-success-template.html',
     {
@@ -48,8 +46,7 @@ export const sendPaymentSuccessEmail = async ({
       orderId: escapeHtml(orderId),
       formattedDate: escapeHtml(formattedDate),
       dashboardUrl: escapeHtml(dashboardUrl)
-    },
-    { hasLogo: attachments.length > 0 }
+    }
   );
 
   if (env.nodeEnv !== 'production') {
@@ -60,8 +57,7 @@ export const sendPaymentSuccessEmail = async ({
     to,
     subject,
     text: `Dear ${name || 'Student'}, your LIBA Online payment of ${formattedAmount} was successful (Order ID: ${orderId}, Transaction: ${transactionId}). Your student account is now active. Access your dashboard at: ${dashboardUrl}`,
-    html,
-    attachments
+    html
   });
 
   return true;

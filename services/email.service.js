@@ -2,7 +2,6 @@ export {
   sendMail,
   getTransporter,
   renderEmailTemplate,
-  getLogoAttachments,
   sendOtpEmail,
   sendPaymentSuccessEmail,
   sendPaymentFailedEmail,

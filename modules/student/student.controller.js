@@ -43,8 +43,13 @@ export const getPayments = async (req, res, next) => {
 
 export const validateScholarshipCode = async (req, res, next) => {
   try {
-    const { code, course, courseCode } = req.body;
-    const result = await StudentService.validateScholarshipCode(code, course || courseCode);
+    const { code, course, courseCode, courseId, course_id, hasCertification, hasValidCert, certifications } = req.body;
+    const result = await StudentService.validateScholarshipCode(
+      code,
+      course || courseCode,
+      courseId || course_id,
+      { hasCertification, hasValidCert, certifications }
+    );
     return res.status(200).json({
       success: true,
       message: 'Scholarship code verified successfully',
