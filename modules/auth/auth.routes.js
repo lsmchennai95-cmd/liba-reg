@@ -22,6 +22,7 @@ router.post('/logout', AuthController.logout);
 router.post('/forgot-password', validate(forgotPasswordSchema), AuthController.forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), AuthController.resetPassword);
 router.get('/courses', AuthController.getCourses);
+router.get('/courses/:courseId/specializations', AuthController.getCourseSpecializations);
 
 // Protected routes
 router.get('/me', authenticate, requireStudent, AuthController.getMe);

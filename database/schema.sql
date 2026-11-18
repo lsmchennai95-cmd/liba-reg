@@ -53,6 +53,9 @@ CREATE TABLE `courses` (
   `code` VARCHAR(50) NOT NULL,
   `name` VARCHAR(255) NOT NULL,
   `description` TEXT NULL DEFAULT NULL,
+  `course_type` VARCHAR(50) NOT NULL DEFAULT 'Online Degree',
+  `scholarship_amount` DECIMAL(12, 2) NOT NULL DEFAULT 40000.00,
+  `is_scholarship_active` TINYINT(1) NOT NULL DEFAULT 1,
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -103,6 +106,10 @@ CREATE TABLE `enrollments` (
   `specialization_id` BIGINT UNSIGNED NOT NULL,
   `enrollment_status` ENUM('pending', 'admitted', 'enrolled', 'completed') NOT NULL DEFAULT 'pending',
   `total_fee` DECIMAL(12, 2) NOT NULL,
+  `original_total_fee` DECIMAL(12, 2) NULL DEFAULT NULL,
+  `registration_fee` DECIMAL(12, 2) NULL DEFAULT NULL,
+  `scholarship_code` VARCHAR(20) NULL DEFAULT NULL,
+  `scholarship_amount` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
   `amount_paid` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
   `outstanding_balance` DECIMAL(12, 2) NOT NULL,
   `enrolled_at` DATETIME NULL DEFAULT NULL,
@@ -176,6 +183,7 @@ CREATE TABLE `registration_payments` (
   `bank_ref_no` VARCHAR(100) NULL DEFAULT NULL,
   `payment_mode` VARCHAR(100) NULL DEFAULT NULL,
   `payment_gateway` VARCHAR(50) NOT NULL DEFAULT 'ccavenue',
+  `payment_method` VARCHAR(50) NULL DEFAULT NULL,
   `payment_type` VARCHAR(50) NOT NULL DEFAULT 'registration_fee',
   `request_type` VARCHAR(50) NULL DEFAULT 'payment_initiation',
   `tid` VARCHAR(100) NULL DEFAULT NULL,
@@ -189,6 +197,13 @@ CREATE TABLE `registration_payments` (
   `courses` VARCHAR(255) NULL DEFAULT NULL,
   `payment_status` ENUM('pending', 'successful', 'failed', 'cancelled') NOT NULL DEFAULT 'pending',
   `paid_at` DATETIME NULL DEFAULT NULL,
+  `actual_payment_date` DATETIME NULL DEFAULT NULL,
+  `verified_by` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `verified_at` DATETIME NULL DEFAULT NULL,
+  `verification_status` ENUM('unverified', 'verified', 'rejected') NOT NULL DEFAULT 'unverified',
+  `verification_notes` TEXT NULL DEFAULT NULL,
+  `payment_proof_path` VARCHAR(255) NULL DEFAULT NULL,
+  `manual_txn_ref` VARCHAR(100) NULL DEFAULT NULL,
   `raw_response` TEXT NULL DEFAULT NULL,
   `gateway_response` TEXT NULL DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -197,10 +212,13 @@ CREATE TABLE `registration_payments` (
   UNIQUE KEY `uq_reg_payments_order` (`order_id`),
   UNIQUE KEY `uq_reg_payments_transaction` (`transaction_id`),
   UNIQUE KEY `uq_reg_payments_tid` (`tid`),
+  UNIQUE KEY `uq_reg_manual_txn_ref` (`manual_txn_ref`),
   KEY `idx_reg_payments_user` (`user_id`),
   KEY `idx_reg_payments_tracking` (`tracking_id`),
   KEY `idx_reg_payments_gateway` (`payment_gateway`),
   KEY `idx_reg_payments_student_id` (`student_id`),
+  KEY `idx_reg_payments_verification` (`verification_status`),
+  KEY `idx_reg_payments_bank_ref` (`bank_ref_no`),
   CONSTRAINT `fk_reg_payments_user` FOREIGN KEY (`user_id`)
     REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -301,16 +319,60 @@ DROP TABLE IF EXISTS `scholarship_claims`;
 CREATE TABLE `scholarship_claims` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `user_id` BIGINT UNSIGNED NOT NULL,
+  `course_id` BIGINT UNSIGNED NULL DEFAULT NULL,
   `total_discount` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  `max_scholarship` DECIMAL(12, 2) NULL DEFAULT NULL,
+  `calculation_snapshot` JSON NULL DEFAULT NULL,
   `status` ENUM('active', 'expired', 'locked_in', 'used') NOT NULL DEFAULT 'active',
   `expires_at` DATETIME NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_scholarship_claims_user_status` (`user_id`, `status`),
+  KEY `idx_scholarship_claims_course` (`course_id`),
   KEY `idx_scholarship_claims_expires` (`expires_at`),
   CONSTRAINT `fk_scholarship_claims_user` FOREIGN KEY (`user_id`)
     REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 14. ADMIN AUDIT LOGS TABLE
+DROP TABLE IF EXISTS `admin_audit_logs`;
+CREATE TABLE `admin_audit_logs` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `admin_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+  `admin_email` VARCHAR(255) NULL DEFAULT NULL,
+  `action` VARCHAR(100) NOT NULL,
+  `target_type` VARCHAR(50) NOT NULL,
+  `target_id` VARCHAR(50) NOT NULL,
+  `previous_value` JSON NULL DEFAULT NULL,
+  `new_value` JSON NULL DEFAULT NULL,
+  `notes` TEXT NULL DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_admin` (`admin_id`),
+  KEY `idx_audit_action` (`action`),
+  KEY `idx_audit_target` (`target_type`, `target_id`),
+  KEY `idx_audit_created` (`created_at`),
+  CONSTRAINT `fk_audit_admin` FOREIGN KEY (`admin_id`)
+    REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 15. COURSE SCHOLARSHIP DISTRIBUTIONS TABLE
+DROP TABLE IF EXISTS `course_scholarship_distributions`;
+CREATE TABLE `course_scholarship_distributions` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `course_id` BIGINT UNSIGNED NOT NULL,
+  `category` VARCHAR(50) NOT NULL,
+  `amount` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `eligibility_config` JSON NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_course_category` (`course_id`, `category`),
+  KEY `idx_csd_course` (`course_id`),
+  CONSTRAINT `fk_csd_course` FOREIGN KEY (`course_id`)
+    REFERENCES `courses` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
@@ -323,11 +385,11 @@ INSERT INTO `system_settings` (`setting_key`, `setting_value`) VALUES
 ('scholarship_timer_hours', '2')
 ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`);
 
-INSERT INTO `courses` (`id`, `code`, `name`, `description`, `is_active`) VALUES
-(1, 'PGDM', 'PGDM (Online) AICTE Approved', 'Post Graduate Diploma in Management - 2-year premier online programme approved by AICTE.', 1),
-(2, 'PGP', 'PGP (Online) AI, Healthcare', 'Post Graduate Programme in Artificial Intelligence and Healthcare domains.', 1),
-(10, 'EXEC_DIP', 'Executive Diploma Programs', 'Executive Diploma Programmes for working professionals.', 1)
-ON DUPLICATE KEY UPDATE `name` = VALUES(`name`);
+INSERT INTO `courses` (`id`, `code`, `name`, `course_type`, `scholarship_amount`, `description`, `is_active`) VALUES
+(1, 'PGDM', 'PGDM (Online) AICTE Approved', 'Online Degree', 40000.00, 'Post Graduate Diploma in Management - 2-year premier online programme approved by AICTE.', 1),
+(2, 'PGP', 'PGP (Online) AI, Healthcare', 'Online Certificate', 30000.00, 'Post Graduate Programme in Artificial Intelligence and Healthcare domains.', 1),
+(10, 'EXEC_DIP', 'Executive Diploma Programs', 'Executive Diploma', 20000.00, 'Executive Diploma Programmes for working professionals.', 1)
+ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `course_type` = VALUES(`course_type`), `scholarship_amount` = VALUES(`scholarship_amount`);
 
 INSERT INTO `specializations` (`id`, `course_id`, `code`, `name`, `is_active`) VALUES
 (1, 1, 'MKT', 'Marketing Management', 1),

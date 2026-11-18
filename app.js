@@ -3,9 +3,9 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
-import { env } from './config/env.js';
-import { apiRoutes } from './routes/index.js';
-import { notFoundHandler, errorHandler } from './middleware/error.middleware.js';
+import { env } from './src/config/env.js';
+import { apiRoutes } from './src/routes/index.js';
+import { notFoundHandler, errorHandler } from './src/middleware/error.middleware.js';
 
 const app = express();
 
@@ -33,8 +33,8 @@ const corsOptions = {
     return callback(new Error(`CORS blocked request from origin: ${origin}`));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 };
 app.use(cors(corsOptions));
 

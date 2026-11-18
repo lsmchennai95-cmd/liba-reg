@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import { getPool } from '../src/config/database.js';
+import { getPool } from '../sr/config/database.js';
 import { env } from '../src/config/env.js';
 
 const initialCourses = [

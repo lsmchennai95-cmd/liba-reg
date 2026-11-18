@@ -121,8 +121,17 @@ export const getStudentDashboard = async (userId) => {
   const courseCodeOrName = profile.course_code || profile.course_name || 'PGDM';
   const courseConfig = getCourseScholarshipConfig(courseCodeOrName);
 
+  const courseRecord = profile.course_id ? await StudentModel.getCourseById(profile.course_id) : await StudentModel.getCourseByCodeOrName(courseCodeOrName);
+  const isCourseScholarshipActive = courseRecord ? (Number(courseRecord.is_scholarship_active) === 1) : Boolean(courseConfig.isEligible);
+  const maxCourseScholarship = courseRecord ? (parseFloat(courseRecord.scholarship_amount) || 0) : (courseConfig.maxScholarship || 0);
+
+  if (courseRecord && !isCourseScholarshipActive) {
+    courseConfig.isEligible = false;
+    courseConfig.message = 'Scholarship applications are currently unavailable for this course.';
+  }
+
   const claimStatus = latestClaim?.status || 'not_applied';
-  const isLockedIn = claimStatus === 'locked_in';
+  const isLockedIn = claimStatus === 'locked_in' || claimStatus === 'used';
   const isRegPaid = Boolean(
     regFeeDetails?.reg_payment_status === 'successful' ||
     (await StudentModel.hasSuccessfulRegistrationPayment(userId))
@@ -135,15 +144,19 @@ export const getStudentDashboard = async (userId) => {
   // 1. Registration Fee is paid, AND
   // 2. Scholarship claim status is `locked_in`.
   // An `active` or `expired` claim must NOT reduce the Course Fee.
-  const originalTotalFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 350000.00;
-  const rawScholarshipAmount = latestClaim
-    ? parseFloat(latestClaim.total_discount || 0.00)
-    : (feeSummary ? parseFloat(feeSummary.scholarship_amount || 0.00) : 0.00);
-  const applicableDiscount = (isRegPaid && isLockedIn) ? rawScholarshipAmount : 0.00;
-  const totalCourseFee = Math.max(0, originalTotalFee - applicableDiscount);
+  // A saved total_discount of 0 in a locked_in claim must remain 0 and NEVER fall back to course discount.
+  const originalTotalFee = feeSummary && feeSummary.original_total_fee != null ? parseFloat(feeSummary.original_total_fee) : null;
+  const savedClaimDiscount = (latestClaim != null && latestClaim.total_discount !== null && latestClaim.total_discount !== undefined)
+    ? Math.max(0, parseFloat(latestClaim.total_discount) || 0)
+    : 0.00;
+  const rawScholarshipAmount = savedClaimDiscount;
+  const applicableDiscount = (isRegPaid && isLockedIn) ? savedClaimDiscount : 0.00;
+  const totalCourseFee = originalTotalFee !== null ? Math.max(0, originalTotalFee - applicableDiscount) : null;
   const totalAmountPaid = feeSummary ? parseFloat(feeSummary.amount_paid || 0.00) : 0.00;
-  const outstandingBalance = Math.max(0, totalCourseFee - totalAmountPaid);
-  const registrationFeePaid = isRegPaid ? parseFloat(feeSummary?.registration_fee_paid || regFeeDetails?.original_registration_fee || 3100.00) : 0.00;
+  const outstandingBalance = totalCourseFee !== null ? Math.max(0, totalCourseFee - totalAmountPaid) : null;
+  const registrationFeePaid = isRegPaid
+    ? parseFloat(feeSummary?.registration_fee_paid || regFeeDetails?.original_registration_fee || 0.00)
+    : 0.00;
 
   let scholarshipBreakdown = null;
   if (academicDetails && courseConfig.isEligible) {
@@ -175,24 +188,38 @@ export const getStudentDashboard = async (userId) => {
       course: profile.course_name || 'N/A',
       courseCode: profile.course_code || 'N/A',
       courseType: courseConfig.type,
-      isScholarshipEligible: courseConfig.isEligible,
-      scholarshipCap: courseConfig.maxScholarship,
-      scholarshipMessage: courseConfig.message,
+      isScholarshipActive: isCourseScholarshipActive,
+      isScholarshipEligible: isCourseScholarshipActive && courseConfig.isEligible,
+      scholarshipCap: maxCourseScholarship,
+      scholarshipMessage: isCourseScholarshipActive
+        ? courseConfig.message
+        : 'Scholarship applications are currently unavailable for this course.',
       specialization: profile.specialization_name || 'N/A',
       specializationCode: profile.specialization_code || 'N/A',
       applicationStatus: profile.application_status,
       enrollmentStatus: profile.enrollment_status || 'pending',
       hasSubmittedAcademics: Boolean(academicDetails),
-      hasScholarshipApplied: applicableDiscount > 0
+      hasScholarshipApplied: applicableDiscount > 0,
+      scholarshipStatus: claimStatus,
+      scholarship_status: claimStatus,
+      expiresAt: latestClaim?.expires_at || null,
+      expires_at: latestClaim?.expires_at || null
     },
+    is_scholarship_active: isCourseScholarshipActive,
+    isScholarshipActive: isCourseScholarshipActive,
     scholarship_status: claimStatus,
     expires_at: latestClaim?.expires_at || null,
     scholarshipStatus: claimStatus,
     expiresAt: latestClaim?.expires_at || null,
     scholarshipClaim: latestClaim ? {
+      id: latestClaim.id,
       status: claimStatus,
       totalDiscount: rawScholarshipAmount,
-      expiresAt: latestClaim.expires_at
+      expiresAt: latestClaim.expires_at,
+      createdAt: latestClaim.created_at,
+      calculationSnapshot: typeof latestClaim.calculation_snapshot === 'string'
+        ? JSON.parse(latestClaim.calculation_snapshot)
+        : latestClaim.calculation_snapshot
     } : null,
     feeInfo: {
       totalCourseFee,
@@ -233,9 +260,95 @@ export const getStudentPayments = async (userId) => {
   return StudentModel.getStudentPayments(userId);
 };
 
-export const validateScholarshipCode = async (rawCode, courseCodeOrName = null) => {
+export const evaluateCertifications = (rawCerts = [], certUploads = []) => {
+  const certs = Array.isArray(rawCerts) ? rawCerts : (rawCerts ? [rawCerts] : []);
+  const uploads = Array.isArray(certUploads) ? certUploads : (certUploads ? [certUploads] : []);
+
+  const validExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
+  const isValidFile = (fileStr) => {
+    if (!fileStr || typeof fileStr !== 'string') return false;
+    const str = fileStr.toLowerCase().trim();
+    if (str.startsWith('data:image/jpeg') || str.startsWith('data:image/png') || str.startsWith('data:application/pdf')) {
+      return true;
+    }
+    return validExtensions.some(ext => str.endsWith(ext) || str.includes(ext));
+  };
+
+  let validCount = 0;
+  let hasIncomplete = false;
+  const processedCerts = [];
+
+  certs.forEach((c, idx) => {
+    if (!c) return;
+    if (typeof c === 'string') {
+      const trimmed = c.trim();
+      if (!trimmed) return;
+      const upload = uploads[idx] || uploads[0];
+      if (upload && isValidFile(upload)) {
+        validCount++;
+        processedCerts.push({ name: trimmed, valid: true });
+      } else if (uploads.length > 0) {
+        validCount++;
+        processedCerts.push({ name: trimmed, valid: true });
+      } else {
+        hasIncomplete = true;
+      }
+      return;
+    }
+
+    if (typeof c === 'object') {
+      const name = (c.name || c.title || '').trim();
+      const institution = (c.institution || c.organization || c.issuingOrganization || '').trim();
+      const year = (c.year || c.completionYear || '').toString().trim();
+      const file = (c.fileName || c.file || c.fileData || c.document || uploads[idx] || uploads[0] || '').toString().trim();
+
+      const hasAnyField = Boolean(name || institution || year || file);
+      if (!hasAnyField) return; // Completely blank entry
+
+      const hasAllFields = Boolean(name && institution && year && file && isValidFile(file));
+      if (hasAllFields) {
+        validCount++;
+        processedCerts.push({ name, institution, year, fileName: c.fileName || file, valid: true });
+      } else {
+        hasIncomplete = true;
+      }
+    }
+  });
+
+  if (certs.length === 0 && uploads.length > 0) {
+    const validUploads = uploads.filter(u => isValidFile(u));
+    if (validUploads.length > 0) {
+      validCount += validUploads.length;
+    }
+  }
+
+  // A student has valid certification ONLY if there is at least one valid certification and NO incomplete certification cards
+  const hasValidCert = validCount > 0 && !hasIncomplete;
+
+  return {
+    hasValidCert,
+    hasIncomplete,
+    validCount,
+    processedCerts
+  };
+};
+
+export const validateScholarshipCode = async (rawCode, courseCodeOrName = null, courseId = null, options = {}) => {
   if (!rawCode || !String(rawCode).trim()) {
     const error = new Error('Please enter a 6-digit scholarship code');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let courseRecord = null;
+  if (courseId) {
+    courseRecord = await StudentModel.getCourseById(courseId);
+  } else if (courseCodeOrName) {
+    courseRecord = await StudentModel.getCourseByCodeOrName(courseCodeOrName);
+  }
+
+  if (courseRecord && Number(courseRecord.is_scholarship_active) === 0) {
+    const error = new Error('Scholarship applications are currently unavailable for this course.');
     error.statusCode = 400;
     throw error;
   }
@@ -261,7 +374,46 @@ export const validateScholarshipCode = async (rawCode, courseCodeOrName = null) 
     throw error;
   }
 
-  const amount = parseFloat(matched.amount);
+  let amount = parseFloat(matched.amount);
+  let configuredCounselor = amount;
+  let effectiveCounselor = amount;
+  let transferredCert = 0;
+
+  if (courseRecord) {
+    const dbDistributions = await StudentModel.getCourseScholarshipDistributions(courseRecord.id);
+    const counselorDist = dbDistributions ? dbDistributions.find(d => d.category === 'counselor') : null;
+    const certDist = dbDistributions ? dbDistributions.find(d => d.category === 'certification') : null;
+
+    if (counselorDist) {
+      if (Number(counselorDist.is_active) === 0) {
+        const error = new Error('Counselor scholarship codes are currently unavailable for this course.');
+        error.statusCode = 400;
+        throw error;
+      }
+      configuredCounselor = parseFloat(counselorDist.amount) || 0;
+      const isCertActive = certDist && Number(certDist.is_active) === 1;
+      const configuredCert = isCertActive ? (parseFloat(certDist.amount) || 0) : 0;
+
+      // Determine if student has submitted or entered a valid certification
+      let hasCertification = false;
+      if (options.hasCertification !== undefined) {
+        hasCertification = Boolean(options.hasCertification);
+      } else if (options.hasValidCert !== undefined) {
+        hasCertification = Boolean(options.hasValidCert);
+      } else if (Array.isArray(options.certifications) || Array.isArray(options.certificateUploads)) {
+        const evaluation = evaluateCertifications(options.certifications, options.certificateUploads || options.certificates);
+        hasCertification = evaluation.hasValidCert;
+      }
+
+      transferredCert = hasCertification ? 0 : configuredCert;
+      effectiveCounselor = configuredCounselor + transferredCert;
+
+      if (amount > effectiveCounselor) {
+        amount = effectiveCounselor;
+      }
+    }
+  }
+
   const courseCfg = courseCodeOrName ? getCourseScholarshipConfig(courseCodeOrName) : null;
 
   return {
@@ -270,6 +422,9 @@ export const validateScholarshipCode = async (rawCode, courseCodeOrName = null) 
     formattedAmount: `₹${amount.toLocaleString('en-IN')}`,
     description: matched.description || 'Counselor Scholarship Grant',
     courseConfig: courseCfg,
+    configuredCounselorAllocation: configuredCounselor,
+    effectiveCounselorAllocation: effectiveCounselor,
+    transferredCertificationAllocation: transferredCert,
     valid: true
   };
 };
@@ -292,14 +447,43 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     throw error;
   }
 
-  // Security Rule: The student must not access or submit the scholarship page before successful registration fee payment and account activation
-  if (!profile.is_active) {
-    const error = new Error('Account inactive. Registration fee payment must be completed before applying for counselor scholarship.');
+  // Security Rule: Student account must be verified before submitting scholarship
+  if (!profile.is_active && !profile.is_verified) {
+    const error = new Error('Account inactive. Email verification must be completed before applying for counselor scholarship.');
     error.statusCode = 403;
     throw error;
   }
 
   const effectiveUserId = profile.user_id;
+
+  // Mandatory Backend Enforcement: Prevent duplicate scholarship applications based on claim state machine
+  const existingClaim = await StudentModel.getLatestScholarshipClaim(effectiveUserId);
+  if (existingClaim) {
+    if (existingClaim.status === 'expired') {
+      const error = new Error('Your scholarship reservation period has ended. You cannot reapply for a scholarship.');
+      error.statusCode = 409;
+      error.code = 'SCHOLARSHIP_CLAIM_EXPIRED';
+      throw error;
+    }
+    if (existingClaim.status === 'active') {
+      const error = new Error('You already have an active scholarship reservation.');
+      error.statusCode = 409;
+      error.code = 'SCHOLARSHIP_CLAIM_ACTIVE';
+      throw error;
+    }
+    if (existingClaim.status === 'locked_in') {
+      const error = new Error('Your scholarship discount is already secured and locked in.');
+      error.statusCode = 409;
+      error.code = 'SCHOLARSHIP_CLAIM_LOCKED_IN';
+      throw error;
+    }
+    if (existingClaim.status === 'used') {
+      const error = new Error('Your scholarship discount has already been used.');
+      error.statusCode = 409;
+      error.code = 'SCHOLARSHIP_CLAIM_USED';
+      throw error;
+    }
+  }
 
   // Validate required 12th details
   if (!payload.twelfth || !payload.twelfth.school || !payload.twelfth.board || !payload.twelfth.stream || !payload.twelfth.year || !payload.twelfth.percentage) {
@@ -318,10 +502,17 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
   const courseCodeOrName = profile.course_code || profile.course_name || payload.course || 'PGDM';
   const courseConfig = getCourseScholarshipConfig(courseCodeOrName);
 
-  // Business Rule: EDP (Executive Diploma) does not have scholarship eligibility
-  if (!courseConfig.isEligible) {
+  const courseRecord = profile.course_id ? await StudentModel.getCourseById(profile.course_id) : await StudentModel.getCourseByCodeOrName(courseCodeOrName);
+  const isCourseScholarshipActive = courseRecord ? (Number(courseRecord.is_scholarship_active) === 1) : Boolean(courseConfig.isEligible);
+  const maxCourseScholarship = courseRecord ? (parseFloat(courseRecord.scholarship_amount) || 0) : (courseConfig.maxScholarship || 0);
+
+  // Business Rule: Check if course or category is not eligible or disabled
+  if (!courseConfig.isEligible || !isCourseScholarshipActive) {
     if (payload.promoCode && String(payload.promoCode).trim()) {
-      const error = new Error('Executive Diploma Programmes (EDP) are not eligible for counselor/merit scholarships.');
+      const errorMsg = !courseConfig.isEligible
+        ? 'Executive Diploma Programmes (EDP) are not eligible for counselor/merit scholarships.'
+        : 'Scholarship applications are currently unavailable for this course.';
+      const error = new Error(errorMsg);
       error.statusCode = 400;
       throw error;
     }
@@ -341,32 +532,43 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
 
     const feeSummary = await StudentModel.getStudentFeeAndPaymentSummary(effectiveUserId);
     const originalCourseFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 128428.00;
+    const isRegPaid = await StudentModel.hasSuccessfulRegistrationPayment(effectiveUserId);
 
     return {
       applicationCompleted: true,
       scholarshipApplied: false,
       isScholarshipEligible: false,
+      isScholarshipActive: isCourseScholarshipActive,
+      courseId: profile.course_id,
+      courseName: profile.course_name,
+      courseCode: profile.course_code,
       courseType: courseConfig.type,
       scholarshipAmount: 0.00,
       scholarshipCode: null,
       formattedAmount: '₹0',
-      message: 'Academic details submitted successfully. EDP programmes are not eligible for scholarships.',
+      message: !courseConfig.isEligible
+        ? 'Academic details submitted successfully. EDP programmes are not eligible for scholarships.'
+        : 'Academic details submitted successfully. Scholarship applications are currently unavailable for this course.',
       courseFee: {
+        courseId: profile.course_id,
+        courseName: profile.course_name,
         originalCourseFee,
         scholarshipAmount: 0.00,
         finalCourseFee: originalCourseFee,
         formattedOriginal: `₹${originalCourseFee.toLocaleString('en-IN')}`,
         formattedDiscount: '₹0',
         formattedFinal: `₹${originalCourseFee.toLocaleString('en-IN')}`,
-        note: 'Executive Diploma Programmes do not qualify for scholarship grants.'
+        note: !courseConfig.isEligible
+          ? 'Executive Diploma Programmes do not qualify for scholarship grants.'
+          : 'Scholarship applications are currently unavailable for this course.'
       },
       registrationFee: {
-        paid: true,
+        paid: isRegPaid,
         amount: feeSummary?.registration_fee || 2500.00,
         note: 'Registration fee was paid separately.'
       },
-      nextStep: 'dashboard',
-      redirectUrl: '../dashboard/'
+      nextStep: isRegPaid ? 'dashboard' : 'payment',
+      redirectUrl: isRegPaid ? '../dashboard/' : '../payment/'
     };
   }
 
@@ -386,14 +588,183 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     rawPromoAmount = parseFloat(verified.amount);
   }
 
-  const breakdown = calculateScholarshipBreakdown({
-    courseCodeOrName,
-    twelfthPercentage: payload.twelfth.percentage,
-    ugPercentage: payload.ug.percentage,
-    promoCodeAmount: rawPromoAmount
-  });
+  // Additive calculation model using course scholarship distributions
+  const dbDistributions = await StudentModel.getCourseScholarshipDistributions(
+    profile.course_id || (courseRecord ? courseRecord.id : null)
+  );
 
-  const scholarshipAmount = breakdown.totalScholarshipAmount;
+  let awarded12th = 0;
+  let awardedUG = 0;
+  let awardedCert = 0;
+  let awardedCounselor = 0;
+  let calculationSnapshot = null;
+  let breakdown = null;
+  let scholarshipAmount = 0.00;
+
+  if (dbDistributions && dbDistributions.length > 0) {
+    const twelfthDist = dbDistributions.find(d => d.category === 'twelfth');
+    const ugDist = dbDistributions.find(d => d.category === 'ug');
+    const certDist = dbDistributions.find(d => d.category === 'certification');
+    const counselorDist = dbDistributions.find(d => d.category === 'counselor');
+
+    const isTwelfthActive = twelfthDist && Number(twelfthDist.is_active) === 1;
+    const isUgActive = ugDist && Number(ugDist.is_active) === 1;
+    const isCertActive = certDist && Number(certDist.is_active) === 1;
+    const isCounselorActive = counselorDist && Number(counselorDist.is_active) === 1;
+
+    const configuredTwelfth = isTwelfthActive ? (parseFloat(twelfthDist.amount) || 0) : 0;
+    const configuredUg = isUgActive ? (parseFloat(ugDist.amount) || 0) : 0;
+    const configuredCert = isCertActive ? (parseFloat(certDist.amount) || 0) : 0;
+    const configuredCounselor = isCounselorActive ? (parseFloat(counselorDist.amount) || 0) : 0;
+
+    // 12th qualification
+    const twelfthPct = parseFloat(payload.twelfth.percentage) || 0;
+    const twelfthMin = (typeof twelfthDist?.eligibility_config === 'string'
+      ? JSON.parse(twelfthDist.eligibility_config)
+      : twelfthDist?.eligibility_config)?.min_percentage ?? 65;
+    if (isTwelfthActive && twelfthPct >= twelfthMin) {
+      awarded12th = configuredTwelfth;
+    }
+
+    // UG qualification
+    const ugPct = parseFloat(payload.ug.percentage) || 0;
+    const ugMin = (typeof ugDist?.eligibility_config === 'string'
+      ? JSON.parse(ugDist.eligibility_config)
+      : ugDist?.eligibility_config)?.min_percentage ?? 65;
+    if (isUgActive && ugPct >= ugMin) {
+      awardedUG = configuredUg;
+    }
+
+    // Additional certification evaluation
+    const certEvaluation = evaluateCertifications(
+      payload.certifications || [],
+      payload.certificateUploads || payload.certificates || []
+    );
+    const hasValidCert = certEvaluation.hasValidCert;
+
+    let transferredCertAllocation = 0;
+    let effectiveCertAllocation = 0;
+    let effectiveCounselorAllocation = configuredCounselor;
+
+    if (hasValidCert && isCertActive) {
+      effectiveCertAllocation = configuredCert;
+      awardedCert = configuredCert;
+      transferredCertAllocation = 0;
+      effectiveCounselorAllocation = configuredCounselor;
+    } else {
+      awardedCert = 0;
+      effectiveCertAllocation = 0;
+      if (isCounselorActive) {
+        transferredCertAllocation = configuredCert;
+        effectiveCounselorAllocation = configuredCounselor + transferredCertAllocation;
+      } else {
+        transferredCertAllocation = 0;
+        effectiveCounselorAllocation = 0;
+      }
+    }
+
+    // Counselor code
+    if (isCounselorActive && promoCode && rawPromoAmount > 0) {
+      awardedCounselor = Math.min(rawPromoAmount, effectiveCounselorAllocation);
+    } else {
+      awardedCounselor = 0;
+    }
+
+    const totalCalculated = awarded12th + awardedUG + awardedCert + awardedCounselor;
+    scholarshipAmount = Math.min(totalCalculated, maxCourseScholarship);
+
+    calculationSnapshot = {
+      course_id: profile.course_id || (courseRecord ? courseRecord.id : null),
+      max_scholarship: maxCourseScholarship,
+      course_max_scholarship: maxCourseScholarship,
+      certification_submitted: hasValidCert,
+      certification_allocation: configuredCert,
+      certification_benefit: awardedCert,
+      transferred_certification_allocation: transferredCertAllocation,
+      configured_counselor_allocation: configuredCounselor,
+      effective_counselor_allocation: effectiveCounselorAllocation,
+      categories: [
+        {
+          category: 'twelfth',
+          label: '12th Qualification',
+          allocated: configuredTwelfth,
+          awarded: awarded12th,
+          eligible: awarded12th > 0
+        },
+        {
+          category: 'ug',
+          label: 'Undergraduate Qualification',
+          allocated: configuredUg,
+          awarded: awardedUG,
+          eligible: awardedUG > 0
+        },
+        {
+          category: 'certification',
+          label: 'Additional Certification',
+          allocated: configuredCert,
+          effective_allocated: effectiveCertAllocation,
+          awarded: awardedCert,
+          eligible: awardedCert > 0,
+          submitted: hasValidCert,
+          transferred_to_counselor: transferredCertAllocation
+        },
+        {
+          category: 'counselor',
+          label: 'Counselor Scholarship Code',
+          allocated: configuredCounselor,
+          effective_allocated: effectiveCounselorAllocation,
+          awarded: awardedCounselor,
+          eligible: awardedCounselor > 0,
+          code: promoCode,
+          transferred_from_certification: transferredCertAllocation
+        }
+      ],
+      total_awarded: scholarshipAmount,
+      calculated_at: new Date().toISOString()
+    };
+
+    breakdown = {
+      courseName: profile.course_name,
+      courseCode: profile.course_code,
+      maxCap: maxCourseScholarship,
+      courseMaxScholarship: maxCourseScholarship,
+      categories: calculationSnapshot.categories,
+      twelfthAmount: awarded12th,
+      ugAmount: awardedUG,
+      certificationAmount: awardedCert,
+      promoAmount: awardedCounselor,
+      totalScholarshipAmount: scholarshipAmount,
+      certificationSubmitted: hasValidCert,
+      certificationAllocation: configuredCert,
+      certificationBenefit: awardedCert,
+      transferredCertificationAllocation: transferredCertAllocation,
+      configuredCounselorAllocation: configuredCounselor,
+      effectiveCounselorAllocation: effectiveCounselorAllocation
+    };
+  } else {
+    // Fallback if no database distributions exist
+    breakdown = calculateScholarshipBreakdown({
+      courseCodeOrName,
+      twelfthPercentage: payload.twelfth.percentage,
+      ugPercentage: payload.ug.percentage,
+      promoCodeAmount: rawPromoAmount
+    });
+    scholarshipAmount = Math.min(breakdown.totalScholarshipAmount, maxCourseScholarship);
+    calculationSnapshot = {
+      course_id: profile.course_id,
+      max_scholarship: maxCourseScholarship,
+      course_max_scholarship: maxCourseScholarship,
+      certification_submitted: false,
+      certification_allocation: 0,
+      certification_benefit: 0,
+      transferred_certification_allocation: 0,
+      configured_counselor_allocation: 0,
+      effective_counselor_allocation: 0,
+      total_awarded: scholarshipAmount,
+      calculated_at: new Date().toISOString()
+    };
+  }
+
   const scholarshipStatus = scholarshipAmount > 0 ? 'applied' : 'not_applied';
 
   // Save academic details
@@ -424,15 +795,20 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
 
     claim = await StudentModel.createOrUpdateScholarshipClaim({
       userId: effectiveUserId,
+      courseId: profile.course_id || null,
       totalDiscount: scholarshipAmount,
       hours: timerHours,
-      isRegFeePaid: isRegPaid
+      isRegFeePaid: isRegPaid,
+      maxScholarship: maxCourseScholarship,
+      calculationSnapshot
     });
   }
 
   const feeSummary = await StudentModel.getStudentFeeAndPaymentSummary(effectiveUserId);
-  const originalCourseFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 350000.00;
-  const finalCourseFee = feeSummary ? parseFloat(feeSummary.total_fee) : Math.max(0, originalCourseFee - scholarshipAmount);
+  const originalCourseFee = feeSummary && feeSummary.original_total_fee != null ? parseFloat(feeSummary.original_total_fee) : null;
+  const finalCourseFee = feeSummary && feeSummary.total_fee != null
+    ? parseFloat(feeSummary.total_fee)
+    : (originalCourseFee !== null ? Math.max(0, originalCourseFee - scholarshipAmount) : null);
 
   const claimStatus = claim ? claim.status : (scholarshipAmount > 0 ? (isRegPaid ? 'locked_in' : 'active') : 'none');
   const nextStep = isRegPaid ? 'dashboard' : 'payment';
@@ -442,9 +818,13 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     applicationCompleted: true,
     scholarshipApplied: scholarshipAmount > 0,
     isScholarshipEligible: true,
+    courseId: profile.course_id,
+    courseName: profile.course_name,
+    courseCode: profile.course_code,
     courseType: courseConfig.type,
     scholarshipAmount,
     scholarshipCode: promoCode,
+    breakdown,
     scholarshipBreakdown: breakdown,
     formattedAmount: `₹${scholarshipAmount.toLocaleString('en-IN')}`,
     registration_fee_paid: isRegPaid,
@@ -455,6 +835,8 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     nextStep,
     redirectUrl,
     courseFee: {
+      courseId: profile.course_id,
+      courseName: profile.course_name,
       originalCourseFee,
       scholarshipAmount,
       finalCourseFee,
@@ -465,7 +847,7 @@ export const submitAcademicAndScholarship = async (userId, payload) => {
     },
     registrationFee: {
       paid: isRegPaid,
-      amount: feeSummary?.registration_fee || 3100.00,
+      amount: feeSummary?.registration_fee != null ? parseFloat(feeSummary.registration_fee) : null,
       note: isRegPaid ? 'Registration fee was paid.' : 'Registration fee must be paid within timer to lock in scholarship.'
     }
   };
@@ -484,24 +866,163 @@ export const getAcademicAndScholarship = async (userId, userEmail = null) => {
   }
 
   const effectiveUserId = profile.user_id;
+  const latestClaim = await StudentModel.getLatestScholarshipClaim(effectiveUserId);
   const details = await StudentModel.getStudentAcademicDetails(effectiveUserId);
   const feeSummary = await StudentModel.getStudentFeeAndPaymentSummary(effectiveUserId);
 
   const courseCodeOrName = profile.course_code || profile.course_name || 'PGDM';
-  const courseConfig = getCourseScholarshipConfig(courseCodeOrName);
+  const defaultStaticConfig = getCourseScholarshipConfig(courseCodeOrName);
 
-  const originalCourseFee = feeSummary ? parseFloat(feeSummary.original_total_fee) : 350000.00;
-  const scholarshipAmount = details ? parseFloat(details.scholarship_amount || 0.00) : 0.00;
-  const finalCourseFee = feeSummary ? parseFloat(feeSummary.total_fee) : Math.max(0, originalCourseFee - scholarshipAmount);
+  const courseRecord = profile.course_id
+    ? await StudentModel.getCourseById(profile.course_id)
+    : await StudentModel.getCourseByCodeOrName(courseCodeOrName);
+
+  const isCourseScholarshipActive = courseRecord
+    ? (Number(courseRecord.is_scholarship_active) === 1)
+    : Boolean(defaultStaticConfig.isEligible);
+
+  const maxCourseScholarship = courseRecord
+    ? (parseFloat(courseRecord.scholarship_amount) || 0)
+    : (defaultStaticConfig.maxScholarship || 0);
+
+  const dbDistributions = await StudentModel.getCourseScholarshipDistributions(
+    profile.course_id || (courseRecord ? courseRecord.id : null)
+  );
+
+  let twelfthDist = null;
+  let ugDist = null;
+  let certDist = null;
+  let counselorDist = null;
+
+  if (dbDistributions && dbDistributions.length > 0) {
+    twelfthDist = dbDistributions.find(d => d.category === 'twelfth');
+    ugDist = dbDistributions.find(d => d.category === 'ug');
+    certDist = dbDistributions.find(d => d.category === 'certification');
+    counselorDist = dbDistributions.find(d => d.category === 'counselor');
+  }
+
+  const isEligibleCourse = defaultStaticConfig.isEligible && isCourseScholarshipActive;
+
+  const dynamicTwelfthMerit = (twelfthDist && Number(twelfthDist.is_active) === 1)
+    ? parseFloat(twelfthDist.amount)
+    : (defaultStaticConfig.twelfthMerit || 0);
+
+  const dynamicUgMerit = (ugDist && Number(ugDist.is_active) === 1)
+    ? parseFloat(ugDist.amount)
+    : (defaultStaticConfig.ugMerit || 0);
+
+  const isCertActive = Boolean(certDist && Number(certDist.is_active) === 1);
+  const isCounselorActive = Boolean(counselorDist && Number(counselorDist.is_active) === 1);
+
+  const configuredCertAllocation = isCertActive ? (parseFloat(certDist.amount) || 0) : 0;
+  const configuredCounselorAllocation = isCounselorActive
+    ? (parseFloat(counselorDist.amount) || 0)
+    : (defaultStaticConfig.maxPromoBalance || 0);
+
+  const twelfthMinPct = (typeof twelfthDist?.eligibility_config === 'string'
+    ? JSON.parse(twelfthDist.eligibility_config)
+    : twelfthDist?.eligibility_config)?.min_percentage ?? 65;
+
+  const ugMinPct = (typeof ugDist?.eligibility_config === 'string'
+    ? JSON.parse(ugDist.eligibility_config)
+    : ugDist?.eligibility_config)?.min_percentage ?? 65;
+
+  const dynamicCourseConfig = {
+    ...defaultStaticConfig,
+    name: courseRecord?.name || profile.course_name || defaultStaticConfig.name,
+    type: courseRecord?.code || profile.course_code || defaultStaticConfig.type,
+    isEligible: isEligibleCourse,
+    isScholarshipActive: isCourseScholarshipActive,
+    maxScholarship: maxCourseScholarship,
+    twelfthMerit: dynamicTwelfthMerit,
+    ugMerit: dynamicUgMerit,
+    certMerit: configuredCertAllocation,
+    counselorAllocation: configuredCounselorAllocation,
+    configuredCertAllocation,
+    configuredCounselorAllocation,
+    twelfthMinPercentage: twelfthMinPct,
+    ugMinPercentage: ugMinPct,
+    distributions: (dbDistributions || []).map(d => ({
+      category: d.category,
+      amount: parseFloat(d.amount),
+      is_active: Number(d.is_active) === 1,
+      isActive: Number(d.is_active) === 1,
+      eligibility_config: typeof d.eligibility_config === 'string' ? JSON.parse(d.eligibility_config) : d.eligibility_config,
+      eligibilityConfig: typeof d.eligibility_config === 'string' ? JSON.parse(d.eligibility_config) : d.eligibility_config
+    }))
+  };
+
+  const originalCourseFee = feeSummary && feeSummary.original_total_fee != null ? parseFloat(feeSummary.original_total_fee) : null;
+  const claimStatus = latestClaim?.status || 'not_applied';
+  const isLockedIn = claimStatus === 'locked_in' || claimStatus === 'used';
+  const isRegPaid = Boolean(
+    feeSummary?.registration_payment_status === 'successful' ||
+    (await StudentModel.hasSuccessfulRegistrationPayment(effectiveUserId))
+  );
+  const applicableDiscount = (isRegPaid && isLockedIn && latestClaim?.total_discount != null)
+    ? Math.max(0, parseFloat(latestClaim.total_discount) || 0)
+    : 0.00;
+  const finalCourseFee = originalCourseFee !== null
+    ? Math.max(0, originalCourseFee - applicableDiscount)
+    : null;
 
   let breakdown = null;
-  if (details && courseConfig.isEligible) {
-    breakdown = calculateScholarshipBreakdown({
-      courseCodeOrName,
-      twelfthPercentage: details.twelfth_percentage,
-      ugPercentage: details.ug_percentage,
-      promoCodeAmount: details.promo_code ? scholarshipAmount : 0
-    });
+  let hasValidCert = false;
+  let transferredCert = 0;
+  let effectiveCounselor = configuredCounselorAllocation;
+
+  if (details && isEligibleCourse) {
+    const twelfthPct = parseFloat(details.twelfth_percentage) || 0;
+    const ugPct = parseFloat(details.ug_percentage) || 0;
+    const awarded12th = (twelfthPct >= twelfthMinPct && dynamicTwelfthMerit > 0) ? dynamicTwelfthMerit : 0;
+    const awardedUG = (ugPct >= ugMinPct && dynamicUgMerit > 0) ? dynamicUgMerit : 0;
+
+    const rawCerts = typeof details.certifications === 'string' ? JSON.parse(details.certifications || '[]') : (details.certifications || []);
+    const certUploads = typeof details.certificate_uploads === 'string' ? JSON.parse(details.certificate_uploads || '[]') : (details.certificate_uploads || []);
+    const certEvaluation = evaluateCertifications(rawCerts, certUploads);
+    hasValidCert = certEvaluation.hasValidCert;
+
+    let awardedCert = 0;
+    if (hasValidCert && isCertActive) {
+      awardedCert = configuredCertAllocation;
+      transferredCert = 0;
+      effectiveCounselor = configuredCounselorAllocation;
+    } else {
+      awardedCert = 0;
+      if (isCounselorActive) {
+        transferredCert = configuredCertAllocation;
+        effectiveCounselor = configuredCounselorAllocation + transferredCert;
+      } else {
+        transferredCert = 0;
+        effectiveCounselor = 0;
+      }
+    }
+
+    const savedScholarshipAmt = parseFloat(details.scholarship_amount) || 0;
+    const promoAmt = details.promo_code ? (savedScholarshipAmt - (awarded12th + awardedUG + awardedCert)) : 0;
+    const awardedCounselor = Math.max(0, Math.min(promoAmt, effectiveCounselor));
+
+    breakdown = {
+      courseName: profile.course_name,
+      courseCode: profile.course_code,
+      maxCap: maxCourseScholarship,
+      courseMaxScholarship: maxCourseScholarship,
+      twelfthAmount: awarded12th,
+      ugAmount: awardedUG,
+      certificationAmount: awardedCert,
+      promoAmount: awardedCounselor,
+      totalScholarshipAmount: savedScholarshipAmt,
+      certificationSubmitted: hasValidCert,
+      certificationAllocation: configuredCertAllocation,
+      transferredCertificationAllocation: transferredCert,
+      configuredCounselorAllocation,
+      effectiveCounselorAllocation: effectiveCounselor
+    };
+  } else if (isEligibleCourse) {
+    if (isCounselorActive) {
+      transferredCert = configuredCertAllocation;
+      effectiveCounselor = configuredCounselorAllocation + transferredCert;
+    }
   }
 
   return {
@@ -512,26 +1033,49 @@ export const getAcademicAndScholarship = async (userId, userEmail = null) => {
       email: profile.email,
       course: profile.course_name,
       courseCode: profile.course_code,
-      courseType: courseConfig.type,
-      isScholarshipEligible: courseConfig.isEligible,
+      courseId: profile.course_id,
+      courseType: dynamicCourseConfig.type,
+      isScholarshipEligible: isEligibleCourse,
+      isScholarshipActive: isCourseScholarshipActive,
       specialization: profile.specialization_name,
       applicationStatus: profile.application_status,
       isActive: Boolean(profile.is_active)
     },
-    courseConfig,
-    isScholarshipEligible: courseConfig.isEligible,
+    courseConfig: dynamicCourseConfig,
+    isScholarshipEligible: isEligibleCourse,
+    is_scholarship_active: isCourseScholarshipActive,
+    isScholarshipActive: isCourseScholarshipActive,
+    scholarship_status: claimStatus,
+    scholarshipStatus: claimStatus,
+    expires_at: latestClaim?.expires_at || null,
+    expiresAt: latestClaim?.expires_at || null,
+    scholarshipClaim: latestClaim ? {
+      id: latestClaim.id,
+      status: claimStatus,
+      totalDiscount: parseFloat(latestClaim.total_discount || 0),
+      expiresAt: latestClaim.expires_at,
+      createdAt: latestClaim.created_at
+    } : null,
+    distributions: dynamicCourseConfig.distributions,
+    max_scholarship: maxCourseScholarship,
+    maxScholarship: maxCourseScholarship,
+    configuredCertAllocation,
+    configuredCounselorAllocation,
+    transferredCertificationAllocation: transferredCert,
+    effectiveCounselorAllocation: effectiveCounselor,
+    certificationSubmitted: hasValidCert,
     scholarshipBreakdown: breakdown,
     courseFee: {
       originalCourseFee,
-      scholarshipCode: details?.promo_code || null,
-      scholarshipAmount,
+      scholarshipCode: isLockedIn ? (details?.promo_code || null) : null,
+      scholarshipAmount: applicableDiscount,
       finalCourseFee,
-      formattedOriginal: `₹${originalCourseFee.toLocaleString('en-IN')}`,
-      formattedDiscount: `-₹${scholarshipAmount.toLocaleString('en-IN')}`,
-      formattedFinal: `₹${finalCourseFee.toLocaleString('en-IN')}`
+      formattedOriginal: originalCourseFee !== null ? `₹${originalCourseFee.toLocaleString('en-IN')}` : '₹0',
+      formattedDiscount: `-₹${applicableDiscount.toLocaleString('en-IN')}`,
+      formattedFinal: finalCourseFee !== null ? `₹${finalCourseFee.toLocaleString('en-IN')}` : '₹0'
     },
     registrationFee: {
-      amount: feeSummary?.registration_fee || 3100.00,
+      amount: feeSummary?.registration_fee != null ? parseFloat(feeSummary.registration_fee) : null,
       paid: feeSummary?.registration_payment_status === 'successful'
     },
     academics: details ? {
@@ -569,8 +1113,10 @@ export const getRegistrationFee = async (userId) => {
 
   const latestClaim = await StudentModel.getLatestScholarshipClaim(userId);
 
-  // Critical Financial Rule: Registration fee comes from course_fees and receives ZERO scholarship discount
-  const originalRegFee = parseFloat(feeDetails.original_registration_fee) || 3100.00;
+  // Critical Financial Rule: Registration fee comes from student enrollment snapshot and receives ZERO scholarship discount
+  const originalRegFee = (feeDetails.original_registration_fee !== null && feeDetails.original_registration_fee !== undefined)
+    ? parseFloat(feeDetails.original_registration_fee)
+    : null;
   const scholarshipDiscount = 0.00;
   const finalRegFee = originalRegFee;
 
@@ -603,7 +1149,7 @@ export const getRegistrationFee = async (userId) => {
       note: 'Registration fee is separate from the course fee and receives ₹0 scholarship discount.'
     },
     courseFee: {
-      totalCourseFee: parseFloat(feeDetails.course_total_fee) || 350000.00,
+      totalCourseFee: feeDetails.course_total_fee != null ? parseFloat(feeDetails.course_total_fee) : null,
       note: 'Course fee is payable after account activation and receives Counselor Scholarship.'
     },
     paymentStatus: {
@@ -656,8 +1202,14 @@ export const initiateRegistrationPayment = async (userId, requestOptions = {}) =
   // Validate CCAvenue credentials, gateway URL, and Crypto.php availability before creating gateway request
   const gatewayConfig = CcavenueService.assertCcavenueReady();
 
-  // Critical Financial Rule: Fee comes strictly from server DB configuration, never frontend input
-  const originalRegFee = parseFloat(feeDetails.original_registration_fee) || 3100.00;
+  // Critical Financial Rule: Fee comes strictly from server DB enrollment snapshot, never frontend input or guessed fallbacks
+  if (feeDetails.fee_snapshot_missing || feeDetails.original_registration_fee === null || feeDetails.original_registration_fee === undefined || isNaN(parseFloat(feeDetails.original_registration_fee))) {
+    const error = new Error('Student enrollment registration fee snapshot is missing and requires administrator reconciliation.');
+    error.statusCode = 409;
+    error.code = 'FEE_SNAPSHOT_MISSING';
+    throw error;
+  }
+  const originalRegFee = parseFloat(feeDetails.original_registration_fee);
   const finalRegFee = originalRegFee;
   const formattedAmount = finalRegFee.toFixed(2);
   const currency = 'INR';
@@ -755,27 +1307,41 @@ export const initiateCoursePayment = async (userId, requestOptions = {}) => {
     throw error;
   }
 
+  const requestedEnrollmentId = requestOptions.enrollmentId || requestOptions.enrollment_id;
+  if (requestedEnrollmentId && Number(requestedEnrollmentId) !== Number(ctx.enrollment_id)) {
+    const error = new Error('Enrollment does not match authenticated student.');
+    error.statusCode = 403;
+    error.code = 'ENROLLMENT_OWNERSHIP_MISMATCH';
+    throw error;
+  }
+
+  if (ctx.fee_snapshot_missing || ctx.original_total_fee === null) {
+    const error = new Error('Student enrollment course fee snapshot is missing and requires administrator reconciliation.');
+    error.statusCode = 409;
+    error.code = 'FEE_SNAPSHOT_MISSING';
+    throw error;
+  }
+
   const isRegPaid = Boolean(
     ctx.registration_fee_paid ||
     (await StudentModel.hasSuccessfulRegistrationPayment(userId))
   );
 
   if (!isRegPaid) {
-    const error = new Error('Please complete your registration fee payment before proceeding to Course Fee payment.');
+    const error = new Error('Complete your registration fee payment to unlock Course Fee payment.');
     error.statusCode = 403;
+    error.code = 'REGISTRATION_FEE_REQUIRED';
     error.redirectUrl = '../payment/';
     throw error;
   }
 
-  // Critical Business Rule 3:
-  // The scholarship discount applies EXCLUSIVELY to the Course Fee only after:
-  // 1. The student successfully pays the Registration Fee.
-  // 2. The scholarship claim has been confirmed as `locked_in` by the backend.
-  // An `active` or `expired` claim must NOT reduce the Course Fee.
   const claim = await StudentModel.getLatestScholarshipClaim(userId);
   const isLockedIn = claim && claim.status === 'locked_in';
   const originalCourseFee = Math.max(0, Number(ctx.original_total_fee || ctx.total_fee) || 0);
-  const applicableDiscount = isLockedIn ? (Number(claim.total_discount || ctx.scholarship_amount) || 0) : 0;
+  const savedClaimDiscount = (claim != null && claim.total_discount !== null && claim.total_discount !== undefined)
+    ? Math.max(0, parseFloat(claim.total_discount) || 0)
+    : 0;
+  const applicableDiscount = isLockedIn ? savedClaimDiscount : 0;
   const totalFee = Math.max(0, originalCourseFee - applicableDiscount);
   const amountPaid = Math.min(totalFee, Math.max(0, Number(ctx.amount_paid) || 0));
   const balance = Math.max(0, Math.round((totalFee - amountPaid) * 100) / 100);
@@ -1068,14 +1634,77 @@ export const handleCcavenueResponse = async ({ encResp }) => {
       };
     }
 
-    const result = await (isCourseFee ? StudentModel.completeCoursePayment : StudentModel.completeRegistrationPayment)({
-      orderId,
-      transactionId: trackingId || bankRefNo || orderId,
-      trackingId,
-      bankRefNo,
-      paymentMode,
-      rawResponse: parsed
-    });
+    // For registration payments: also strictly verify against student's saved enrollment registration fee snapshot
+    if (!isCourseFee) {
+      const regFeeDetails = await StudentModel.getRegistrationFeeDetails(existingOrder.user_id);
+      const savedRegFee = regFeeDetails && regFeeDetails.original_registration_fee != null
+        ? parseFloat(regFeeDetails.original_registration_fee)
+        : null;
+
+      if (savedRegFee !== null && Math.abs(returnedAmount - savedRegFee) > 0.01) {
+        await StudentModel.updateNonSuccessRegistrationPayment({
+          orderId,
+          paymentStatus: 'failed',
+          trackingId,
+          bankRefNo,
+          paymentMode,
+          rawResponse: {
+            ...parsed,
+            verificationError: `Payment amount ₹${returnedAmount.toFixed(2)} differs from student saved Registration Fee snapshot ₹${savedRegFee.toFixed(2)}.`
+          }
+        });
+
+        return {
+          statusCode: 400,
+          outcome: 'amount_mismatch',
+          redirectUrl: `${failedBaseUrl}?status=amount_mismatch&orderId=${encodeURIComponent(orderId)}`,
+          message: 'Payment amount does not match student authoritative registration fee snapshot.'
+        };
+      }
+    }
+
+    let actualGatewayDate = null;
+    if (parsed.trans_date) {
+      const parts = String(parsed.trans_date).trim().split(/[\s/:-]+/);
+      if (parts.length >= 6) {
+        if (parts[0].length === 4) {
+          actualGatewayDate = `${parts[0]}-${parts[1]}-${parts[2]} ${parts[3]}:${parts[4]}:${parts[5]}`;
+        } else if (parts[2].length === 4) {
+          actualGatewayDate = `${parts[2]}-${parts[1]}-${parts[0]} ${parts[3]}:${parts[4]}:${parts[5]}`;
+        }
+      }
+    }
+
+    let result;
+    try {
+      result = await (isCourseFee ? StudentModel.completeCoursePayment : StudentModel.completeRegistrationPayment)({
+        orderId,
+        transactionId: trackingId || bankRefNo || orderId,
+        trackingId,
+        bankRefNo,
+        paymentMode,
+        actualPaymentDate: actualGatewayDate,
+        rawResponse: parsed
+      });
+    } catch (completeErr) {
+      if (completeErr.code === 'DUPLICATE_TRANSACTION_REFERENCE') {
+        await (isCourseFee ? StudentModel.updateNonSuccessCoursePayment : StudentModel.updateNonSuccessRegistrationPayment)({
+          orderId,
+          paymentStatus: 'failed',
+          trackingId,
+          bankRefNo,
+          paymentMode,
+          rawResponse: { ...parsed, verificationError: completeErr.message }
+        });
+        return {
+          statusCode: 409,
+          outcome: 'duplicate_reference',
+          redirectUrl: `${failedBaseUrl}?status=duplicate_reference&orderId=${encodeURIComponent(orderId)}${typeSuffix}`,
+          message: completeErr.message
+        };
+      }
+      throw completeErr;
+    }
 
     if (!result.alreadyProcessed) {
       const studentName = existingOrder.full_name || existingOrder.first_name || 'Student';

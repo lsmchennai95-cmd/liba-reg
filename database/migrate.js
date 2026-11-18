@@ -1,4 +1,4 @@
-import { getPool } from '../config/database.js';
+import { getPool } from '../src/config/database.js';
 
 async function runMigration() {
   console.log('==============================================');
@@ -364,6 +364,7 @@ async function runMigration() {
       CREATE TABLE IF NOT EXISTS \`scholarship_claims\` (
         \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         \`user_id\` BIGINT UNSIGNED NOT NULL,
+        \`course_id\` BIGINT UNSIGNED NULL DEFAULT NULL,
         \`total_discount\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
         \`status\` ENUM('active', 'expired', 'locked_in', 'used') NOT NULL DEFAULT 'active',
         \`expires_at\` DATETIME NOT NULL,
@@ -371,12 +372,85 @@ async function runMigration() {
         \`updated_at\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (\`id\`),
         KEY \`idx_scholarship_claims_user_status\` (\`user_id\`, \`status\`),
+        KEY \`idx_scholarship_claims_course\` (\`course_id\`),
         KEY \`idx_scholarship_claims_expires\` (\`expires_at\`),
         CONSTRAINT \`fk_scholarship_claims_user\` FOREIGN KEY (\`user_id\`)
           REFERENCES \`users\` (\`id\`) ON DELETE CASCADE ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log('[MIGRATION] Verified `scholarship_claims` table.');
+
+    // 17. Courses scholarship configuration
+    const [courseCols] = await pool.query('SHOW COLUMNS FROM `courses`');
+    const courseColNames = new Set(courseCols.map(c => c.Field));
+    if (!courseColNames.has('course_type')) {
+      await pool.query("ALTER TABLE `courses` ADD COLUMN `course_type` VARCHAR(50) NOT NULL DEFAULT 'Online Degree' AFTER `description`");
+    }
+    if (!courseColNames.has('scholarship_amount')) {
+      await pool.query("ALTER TABLE `courses` ADD COLUMN `scholarship_amount` DECIMAL(12, 2) NOT NULL DEFAULT 40000.00 AFTER `course_type`");
+    }
+    if (!courseColNames.has('is_scholarship_active')) {
+      await pool.query("ALTER TABLE `courses` ADD COLUMN `is_scholarship_active` TINYINT(1) NOT NULL DEFAULT 1 AFTER `scholarship_amount`");
+    }
+    console.log('[MIGRATION] Verified `courses` scholarship configuration fields.');
+
+    // 18. Registration payments manual verification fields
+    const [regCols] = await pool.query('SHOW COLUMNS FROM `registration_payments`');
+    const regColNames = new Set(regCols.map(c => c.Field));
+    if (!regColNames.has('payment_method')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `payment_method` VARCHAR(50) NULL DEFAULT NULL AFTER `payment_gateway`");
+    }
+    if (!regColNames.has('actual_payment_date')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `actual_payment_date` DATETIME NULL DEFAULT NULL AFTER `paid_at`");
+    }
+    if (!regColNames.has('verified_by')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `verified_by` BIGINT UNSIGNED NULL DEFAULT NULL AFTER `actual_payment_date`");
+    }
+    if (!regColNames.has('verified_at')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `verified_at` DATETIME NULL DEFAULT NULL AFTER `verified_by`");
+    }
+    if (!regColNames.has('verification_status')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `verification_status` ENUM('unverified', 'verified', 'rejected') NOT NULL DEFAULT 'unverified' AFTER `verified_at`");
+    }
+    if (!regColNames.has('verification_notes')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `verification_notes` TEXT NULL DEFAULT NULL AFTER `verification_status`");
+    }
+    if (!regColNames.has('payment_proof_path')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `payment_proof_path` VARCHAR(255) NULL DEFAULT NULL AFTER `verification_notes`");
+    }
+    if (!regColNames.has('manual_txn_ref')) {
+      await pool.query("ALTER TABLE `registration_payments` ADD COLUMN `manual_txn_ref` VARCHAR(100) NULL DEFAULT NULL AFTER `payment_proof_path`");
+      await pool.query("ALTER TABLE `registration_payments` ADD UNIQUE KEY `uq_reg_manual_txn_ref` (`manual_txn_ref`)");
+    }
+    console.log('[MIGRATION] Verified `registration_payments` manual verification & uniqueness fields.');
+
+    // 19. Admin audit logs table (with ON DELETE SET NULL to preserve audit trail)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS \`admin_audit_logs\` (
+        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`admin_id\` BIGINT UNSIGNED NULL DEFAULT NULL,
+        \`admin_email\` VARCHAR(255) NULL DEFAULT NULL,
+        \`action\` VARCHAR(100) NOT NULL,
+        \`target_type\` VARCHAR(50) NOT NULL,
+        \`target_id\` VARCHAR(50) NOT NULL,
+        \`previous_value\` JSON NULL DEFAULT NULL,
+        \`new_value\` JSON NULL DEFAULT NULL,
+        \`notes\` TEXT NULL DEFAULT NULL,
+        \`created_at\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_audit_admin\` (\`admin_id\`),
+        KEY \`idx_audit_action\` (\`action\`),
+        KEY \`idx_audit_target\` (\`target_type\`, \`target_id\`),
+        KEY \`idx_audit_created\` (\`created_at\`),
+        CONSTRAINT \`fk_audit_admin\` FOREIGN KEY (\`admin_id\`)
+          REFERENCES \`users\` (\`id\`) ON DELETE SET NULL ON UPDATE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[MIGRATION] Verified `admin_audit_logs` table (retention safe).');
+
+    // 20. Run Scholarship Distribution & Immutable Fee Snapshot Migration
+    const { runPhase44Migration } = await import('./course-scholarship-distribution-and-fee-snapshot-migration.js');
+    await runPhase44Migration();
 
     console.log('\n[SUCCESS] All database migrations applied successfully!');
     process.exit(0);

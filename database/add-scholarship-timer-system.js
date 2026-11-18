@@ -1,4 +1,4 @@
-import { getPool } from '../config/database.js';
+import { getPool } from '../src/config/database.js';
 
 async function migrateScholarshipTimer() {
   console.log('========================================================');

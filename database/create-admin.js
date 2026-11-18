@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import { query } from '../src/config/database.js';
+import { query } from '..src//config/database.js';
 
 const parseArg = (name) => {
   const prefix = `--${name}=`;
